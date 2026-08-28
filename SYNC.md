@@ -1,0 +1,7 @@
+# Synchronization
+
+Mesh0 uses TCP protected by TLS 1.3. Peers have persistent Ed25519 keys; TLS certificates are self-signed and their certificate public keys are checked against explicit local pins. Public PKI is not required. Pairing also records a durable, one-to-one authorization binding between each remote actor ID and its pinned public key. A remote peer is rejected before clock exchange or transaction decoding if its pinned key, database identity, actor binding, or Hello/TLS key consistency differs. A bound actor has no implicit write capability: every collection it modifies in a transaction must have an explicit durable local write grant, and any ungranted operation rejects the entire batch before state or WAL mutation. Revoking a grant controls future acceptance only; it cannot erase data a peer already received.
+
+The binary protocol uses bounded canonical varint frames: `Hello`, `ClockSummary`, `TxnBatch`, `Done`, `Digest`, and `Error`. Peers exchange actor frontiers, send only batches after the remote contiguous frontier, hold batches with missing causal dependencies, durably admit valid batches exactly once, then exchange canonical state digests. Equal frontiers with unequal digests are an invariant failure.
+
+There is no authoritative relay or primary. `serve` is merely a reachable replica; all replicas remain independently readable and writable while offline.

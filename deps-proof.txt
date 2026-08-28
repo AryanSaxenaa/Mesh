@@ -1,0 +1,5 @@
+Expected output of `go list -m all`:
+
+github.com/mesh0/mesh0
+
+The module graph intentionally has no third-party requirements. Canonical builds use -mod=readonly and CGO_ENABLED=0.

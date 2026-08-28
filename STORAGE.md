@@ -1,0 +1,7 @@
+# Storage and recovery
+
+A database directory contains `IDENTITY`, `MANIFEST`, `LOCK`, `segments/`, `snapshots/`, `blobs/`, `peers/`, and `tmp/`. Identity and manifest files have magic bytes, format generation, bounded canonical fields, and checksums/hashes. Files are written to a sibling temporary file, synced, atomically renamed, then the containing directory is synced where the platform permits it. Windows does not support syncing directory handles through Go's `os.File.Sync`; Mesh0 therefore fsyncs each replacement file before rename and treats the directory-sync step as best effort on Windows, while retaining strict directory sync on platforms that expose it.
+
+Segments start with `M0SG`. Each `M0FR` transaction frame contains a bounded canonical batch and a CRC32C Castagnoli checksum. `sync` durability fsyncs the segment before acknowledgement; `memory` is explicitly allowed to lose acknowledged writes after a power failure.
+
+Opening validates identity/manifest, loads a hash-checked snapshot, replays retained segments through causal holdback, and truncates only a malformed trailing active-segment frame. Corruption in an immutable segment fails open rather than being silently skipped. Snapshots retain canonical operation history in generation one, preserving all merge metadata for long-offline replicas.
