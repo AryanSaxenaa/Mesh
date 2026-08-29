@@ -23,26 +23,27 @@ import (
 )
 
 const (
-	peerIdentityName                 = "PEER_IDENTITY"
-	actorBindingsName                = "ACTOR_BINDINGS"
-	actorWriteGrantsName             = "ACTOR_WRITE_GRANTS"
-	peersDir                         = "peers"
-	actorBindingGeneration           = 1
-	actorWriteGrantGeneration        = 1
-	maxActorBindings                 = 4096
-	maxWriteCollectionsPerActor      = 256
-	maxActorWriteGrants              = 4096
-	maxSyncRanges                    = 4096
-	maxWireFrame                     = maxBatchBytes + 4096
-	maxPendingBatches                = 1024
-	maxPendingBytes                  = 64 << 20
-	wireHello                   byte = 1
-	wireClock                   byte = 2
-	wireBatch                   byte = 3
-	wireDone                    byte = 4
-	wireDigest                  byte = 5
-	wireError                   byte = 6
-	wireRanges                  byte = 7
+	peerIdentityName                   = "PEER_IDENTITY"
+	actorBindingsName                  = "ACTOR_BINDINGS"
+	actorWriteGrantsName               = "ACTOR_WRITE_GRANTS"
+	peersDir                           = "peers"
+	actorBindingGeneration             = 1
+	actorWriteGrantGeneration          = 1
+	maxActorBindings                   = 4096
+	maxWriteCollectionsPerActor        = 256
+	maxActorWriteGrants                = 4096
+	maxSyncRanges                      = 4096
+	maxSyncRangeSpan            uint64 = 1 << 20
+	maxWireFrame                       = maxBatchBytes + 4096
+	maxPendingBatches                  = 1024
+	maxPendingBytes                    = 64 << 20
+	wireHello                   byte   = 1
+	wireClock                   byte   = 2
+	wireBatch                   byte   = 3
+	wireDone                    byte   = 4
+	wireDigest                  byte   = 5
+	wireError                   byte   = 6
+	wireRanges                  byte   = 7
 )
 
 type PeerConfig struct {
@@ -994,7 +995,7 @@ func decodeActorRanges(data []byte) ([]actorRange, error) {
 			return nil, ErrCorruption
 		}
 		last, err := decoded.u()
-		if err != nil || last < first {
+		if err != nil || last < first || last-first >= maxSyncRangeSpan {
 			return nil, ErrCorruption
 		}
 		ranges = append(ranges, actorRange{actor: ActorID(id), first: first, last: last})
@@ -1007,8 +1008,16 @@ func decodeActorRanges(data []byte) ([]actorRange, error) {
 func missingActorRanges(local, remote VersionVector) []actorRange {
 	ranges := make([]actorRange, 0)
 	for actor, last := range remote {
-		if last > local[actor] {
-			ranges = append(ranges, actorRange{actor: actor, first: local[actor] + 1, last: last})
+		for first := local[actor] + 1; first != 0 && first <= last; {
+			end := first + maxSyncRangeSpan - 1
+			if end < first || end > last {
+				end = last
+			}
+			ranges = append(ranges, actorRange{actor: actor, first: first, last: end})
+			if end == last {
+				break
+			}
+			first = end + 1
 		}
 	}
 	sort.Slice(ranges, func(i, j int) bool { return idCompare(ID(ranges[i].actor), ID(ranges[j].actor)) < 0 })
