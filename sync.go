@@ -32,6 +32,7 @@ const (
 	maxActorBindings                 = 4096
 	maxWriteCollectionsPerActor      = 256
 	maxActorWriteGrants              = 4096
+	maxSyncRanges                    = 4096
 	maxWireFrame                     = maxBatchBytes + 4096
 	maxPendingBatches                = 1024
 	maxPendingBytes                  = 64 << 20
@@ -957,6 +958,79 @@ func decodeDigest(data []byte) (VersionVector, [32]byte, error) {
 }
 
 func sameFrontier(left, right VersionVector) bool { return left.Compare(right) == ClockEqual }
+
+type actorRange struct {
+	actor       ActorID
+	first, last uint64
+}
+
+func encodeActorRanges(ranges []actorRange) []byte {
+	var encoded encoder
+	encoded.u(uint64(len(ranges)))
+	for _, interval := range ranges {
+		encoded.id(ID(interval.actor))
+		encoded.u(interval.first)
+		encoded.u(interval.last)
+	}
+	return encoded.Bytes()
+}
+
+func decodeActorRanges(data []byte) ([]actorRange, error) {
+	decoded := decoder{b: data}
+	count, err := decoded.u()
+	if err != nil || count > maxSyncRanges {
+		return nil, ErrCorruption
+	}
+	ranges := make([]actorRange, 0, count)
+	var previous ID
+	for index := uint64(0); index < count; index++ {
+		id, err := decoded.id()
+		if err != nil || ID(id).IsZero() || (index > 0 && idCompare(previous, id) >= 0) {
+			return nil, ErrCorruption
+		}
+		first, err := decoded.u()
+		if err != nil || first == 0 {
+			return nil, ErrCorruption
+		}
+		last, err := decoded.u()
+		if err != nil || last < first {
+			return nil, ErrCorruption
+		}
+		ranges = append(ranges, actorRange{actor: ActorID(id), first: first, last: last})
+		previous = id
+	}
+	return ranges, decoded.done()
+}
+
+// missingActorRanges describes the contiguous suffixes local needs from remote.
+func missingActorRanges(local, remote VersionVector) []actorRange {
+	ranges := make([]actorRange, 0)
+	for actor, last := range remote {
+		if last > local[actor] {
+			ranges = append(ranges, actorRange{actor: actor, first: local[actor] + 1, last: last})
+		}
+	}
+	sort.Slice(ranges, func(i, j int) bool { return idCompare(ID(ranges[i].actor), ID(ranges[j].actor)) < 0 })
+	return ranges
+}
+
+func (db *DB) batchesForRanges(ranges []actorRange) []Batch {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	batches := make([]Batch, 0)
+	for _, batch := range db.state.Batches {
+		end := batch.First.Seq + uint64(batch.Count) - 1
+		for _, interval := range ranges {
+			if batch.First.Actor == interval.actor && batch.First.Seq <= interval.last && end >= interval.first {
+				batches = append(batches, batch)
+				break
+			}
+		}
+	}
+	BatchSort(batches)
+	return batches
+}
+
 func (db *DB) batchesMissing(remote VersionVector) []Batch {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
