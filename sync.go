@@ -1192,6 +1192,11 @@ func (db *DB) syncConnection(ctx context.Context, connection *tls.Conn, identity
 	if err != nil {
 		return err
 	}
+	for _, interval := range remoteRanges {
+		if interval.actor != status.ActorID {
+			return fmt.Errorf("%w: direct peer requested a foreign actor range", ErrAuthorizationDenied)
+		}
+	}
 	outgoing := db.batchesForRanges(remoteRanges)
 	writeErr := make(chan error, 1)
 	go func() {
