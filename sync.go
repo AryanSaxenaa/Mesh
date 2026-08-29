@@ -42,6 +42,7 @@ const (
 	wireDone                    byte = 4
 	wireDigest                  byte = 5
 	wireError                   byte = 6
+	wireRanges                  byte = 7
 )
 
 type PeerConfig struct {
@@ -1176,7 +1177,22 @@ func (db *DB) syncConnection(ctx context.Context, connection *tls.Conn, identity
 	if err != nil {
 		return err
 	}
-	outgoing := db.batchesMissing(remoteClock)
+	requestedRanges := missingActorRanges(status.Frontier, remoteClock)
+	if err := writeWireFrame(connection, wireRanges, encodeActorRanges(requestedRanges)); err != nil {
+		return err
+	}
+	kind, payload, err = readWireFrame(reader)
+	if err != nil {
+		return err
+	}
+	if kind != wireRanges {
+		return ErrCorruption
+	}
+	remoteRanges, err := decodeActorRanges(payload)
+	if err != nil {
+		return err
+	}
+	outgoing := db.batchesForRanges(remoteRanges)
 	writeErr := make(chan error, 1)
 	go func() {
 		for _, batch := range outgoing {
