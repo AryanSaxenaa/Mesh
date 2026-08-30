@@ -28,6 +28,10 @@ func TestActorRangeCodecIsCanonicalAndBounded(t *testing.T) {
 	if _, err := decodeActorRanges([]byte{1}); !errors.Is(err, ErrCorruption) {
 		t.Fatalf("truncated range error = %v", err)
 	}
+	oversized := []actorRange{{actor: ranges[0].actor, first: 1, last: maxSyncRangeSpan + 1}}
+	if _, err := decodeActorRanges(encodeActorRanges(oversized)); !errors.Is(err, ErrCorruption) {
+		t.Fatalf("oversized range error = %v", err)
+	}
 }
 
 func TestRangeSelectionKeepsWholeBatch(t *testing.T) {
