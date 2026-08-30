@@ -1,10 +1,13 @@
 package mesh0
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -73,10 +76,7 @@ func TestMissingActorRangesOnlyRequestsDirectPeer(t *testing.T) {
 		ActorID(peer):    maxSyncRangeSpan + 6,
 		ActorID(foreign): 99,
 	}
-	ranges, err := missingActorRanges(local, remote, ActorID(peer))
-	if err != nil {
-		t.Fatal(err)
-	}
+	ranges := missingActorRanges(local, remote, ActorID(peer))
 	if len(ranges) != 2 {
 		t.Fatalf("range count = %d, want 2", len(ranges))
 	}
@@ -240,5 +240,85 @@ func TestSyncHelloNegotiatesRequiredCapabilities(t *testing.T) {
 	truncated := hello.encode()[:len(hello.encode())-1]
 	if _, err := decodeHello(truncated); !errors.Is(err, ErrCorruption) {
 		t.Fatalf("truncated capability error = %v", err)
+	}
+}
+
+func TestMissingActorRangesPagesOversizedSuffix(t *testing.T) {
+	peer, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageEnd := uint64(maxSyncRanges) * maxSyncRangeSpan
+	ranges := missingActorRanges(nil, VersionVector{ActorID(peer): pageEnd + 1}, ActorID(peer))
+	if len(ranges) != maxSyncRanges {
+		t.Fatalf("range page count = %d, want %d", len(ranges), maxSyncRanges)
+	}
+	if ranges[0] != (actorRange{actor: ActorID(peer), first: 1, last: maxSyncRangeSpan}) || ranges[len(ranges)-1].last != pageEnd {
+		t.Fatalf("range page boundaries = first %#v, last %#v", ranges[0], ranges[len(ranges)-1])
+	}
+}
+
+func TestWireErrorsAreTypedAndCanonical(t *testing.T) {
+	for _, expected := range []error{ErrProtocolIncompatible, ErrAuthorizationDenied, ErrCausalGap, ErrResourceLimit} {
+		var wire bytes.Buffer
+		signalWireError(&wire, expected)
+		kind, payload, err := readWireFrame(bufio.NewReader(&wire))
+		if err != nil || kind != wireError {
+			t.Fatalf("wire error frame = kind %d, err %v", kind, err)
+		}
+		if decoded := decodeWireError(payload); !errors.Is(decoded, expected) {
+			t.Fatalf("wire error %v decoded as %v", expected, decoded)
+		}
+	}
+	if err := decodeWireError([]byte{0}); !errors.Is(err, ErrCorruption) {
+		t.Fatalf("unknown wire error = %v", err)
+	}
+	if err := decodeWireError([]byte{byte(wireErrorProtocolIncompatible), 0}); !errors.Is(err, ErrCorruption) {
+		t.Fatalf("noncanonical wire error = %v", err)
+	}
+}
+
+func TestRangeSelectionPaginatesByCanonicalBytes(t *testing.T) {
+	db := newTestDB(t)
+	actor := db.ActorID()
+	payload := String(strings.Repeat("x", maxStringBytes))
+	const batchCount = 65
+	db.mu.Lock()
+	for seq := uint64(1); seq <= batchCount; seq++ {
+		dot := Dot{Actor: actor, Seq: seq}
+		db.state.Batches[dot] = Batch{
+			First:        dot,
+			Count:        1,
+			Dependencies: VersionVector{},
+			Operations: []Operation{{
+				Dot:      dot,
+				Document: DocumentKey{Collection: "tasks", ID: "one"},
+				Path:     []string{"value"},
+				Action:   MapAssign,
+				Value:    payload,
+			}},
+		}
+	}
+	db.mu.Unlock()
+	batches, more, err := db.batchesForRanges([]actorRange{{actor: actor, first: 1, last: batchCount}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !more || len(batches) == 0 || len(batches) >= batchCount {
+		t.Fatalf("byte page = %d batches, more=%v", len(batches), more)
+	}
+	total := 0
+	for index, batch := range batches {
+		if batch.First.Seq != uint64(index+1) {
+			t.Fatalf("byte page batch %d sequence = %d", index, batch.First.Seq)
+		}
+		raw, err := batch.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += len(raw)
+	}
+	if total > maxSyncResponseBytes {
+		t.Fatalf("byte page payload = %d", total)
 	}
 }

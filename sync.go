@@ -52,6 +52,10 @@ const (
 	wireDigest                    byte   = 5
 	wireError                     byte   = 6
 	wireRanges                    byte   = 7
+	wireErrorProtocolIncompatible uint64 = 1
+	wireErrorAuthorizationDenied  uint64 = 2
+	wireErrorCausalGap            uint64 = 3
+	wireErrorResourceLimit        uint64 = 4
 )
 
 type PeerConfig struct {
@@ -817,10 +821,55 @@ func readWireFrame(reader *bufio.Reader) (byte, []byte, error) {
 		return 0, nil, ErrResourceLimit
 	}
 	data := make([]byte, size)
-	if _, err := io.ReadFull(reader, data); err != nil {
+	if _, err = io.ReadFull(reader, data); err != nil {
 		return 0, nil, err
 	}
 	return data[0], data[1:], nil
+}
+
+func encodeWireError(err error) []byte {
+	var code uint64
+	switch {
+	case errors.Is(err, ErrProtocolIncompatible):
+		code = wireErrorProtocolIncompatible
+	case errors.Is(err, ErrAuthorizationDenied):
+		code = wireErrorAuthorizationDenied
+	case errors.Is(err, ErrCausalGap):
+		code = wireErrorCausalGap
+	case errors.Is(err, ErrResourceLimit):
+		code = wireErrorResourceLimit
+	default:
+		code = wireErrorResourceLimit
+	}
+	var encoded encoder
+	encoded.u(code)
+	return encoded.Bytes()
+}
+
+func decodeWireError(payload []byte) error {
+	decoded := decoder{b: payload}
+	code, err := decoded.u()
+	if err != nil || decoded.done() != nil {
+		return ErrCorruption
+	}
+	switch code {
+	case wireErrorProtocolIncompatible:
+		return ErrProtocolIncompatible
+	case wireErrorAuthorizationDenied:
+		return ErrAuthorizationDenied
+	case wireErrorCausalGap:
+		return ErrCausalGap
+	case wireErrorResourceLimit:
+		return ErrResourceLimit
+	default:
+		return ErrCorruption
+	}
+}
+
+func signalWireError(writer io.Writer, err error) {
+	// This is best-effort: the local classified error remains authoritative if
+	// the peer has already closed or refuses the terminal error frame.
+	_ = writeWireFrame(writer, wireError, encodeWireError(err))
 }
 
 type signedBatch struct {
@@ -1029,16 +1078,18 @@ func decodeActorRanges(data []byte) ([]actorRange, error) {
 // missingActorRanges describes the bounded contiguous suffix local needs from
 // the directly connected actor. Direct-peer batches are signed by that actor,
 // so requesting any other actor's history would be an unsupported relay.
-func missingActorRanges(local, remote VersionVector, actor ActorID) ([]actorRange, error) {
+func missingActorRanges(local, remote VersionVector, actor ActorID) []actorRange {
 	last := remote[actor]
 	first := local[actor] + 1
 	if first == 0 || first > last {
-		return nil, nil
+		return nil
 	}
 	ranges := make([]actorRange, 0, 1)
 	for first <= last {
 		if len(ranges) == maxSyncRanges {
-			return nil, ErrResourceLimit
+			// The response/page loop will refresh the frontier and request the
+			// next canonical prefix. Never construct an unbounded request frame.
+			break
 		}
 		end := first + maxSyncRangeSpan - 1
 		if end < first || end > last {
@@ -1050,7 +1101,7 @@ func missingActorRanges(local, remote VersionVector, actor ActorID) ([]actorRang
 		}
 		first = end + 1
 	}
-	return ranges, nil
+	return ranges
 }
 
 // batchMaxHeap retains the earliest direct-actor transaction batches without
@@ -1231,9 +1282,13 @@ func (db *DB) syncConnection(ctx context.Context, connection *tls.Conn, identity
 	}
 	remoteHello, err := decodeHello(payload)
 	if err != nil {
+		if errors.Is(err, ErrProtocolIncompatible) {
+			signalWireError(connection, err)
+		}
 		return err
 	}
 	if _, err := negotiateSyncCapabilities(localHello.capabilities, remoteHello.capabilities); err != nil {
+		signalWireError(connection, err)
 		return err
 	}
 	if remoteHello.database != status.DatabaseID {
@@ -1278,6 +1333,9 @@ round:
 	if err != nil {
 		return err
 	}
+	if kind == wireError {
+		return decodeWireError(payload)
+	}
 	if kind != wireClock {
 		return ErrCorruption
 	}
@@ -1285,16 +1343,16 @@ round:
 	if err != nil {
 		return err
 	}
-	requestedRanges, err := missingActorRanges(status.Frontier, remoteClock, remoteHello.actor)
-	if err != nil {
-		return err
-	}
+	requestedRanges := missingActorRanges(status.Frontier, remoteClock, remoteHello.actor)
 	if err := writeWireFrame(connection, wireRanges, encodeActorRanges(requestedRanges)); err != nil {
 		return err
 	}
 	kind, payload, err = readWireFrame(reader)
 	if err != nil {
 		return err
+	}
+	if kind == wireError {
+		return decodeWireError(payload)
 	}
 	if kind != wireRanges {
 		return ErrCorruption
@@ -1305,15 +1363,20 @@ round:
 	}
 	for _, interval := range remoteRanges {
 		if interval.actor != status.ActorID {
-			return fmt.Errorf("%w: direct peer requested a foreign actor range", ErrAuthorizationDenied)
+			err := fmt.Errorf("%w: direct peer requested a foreign actor range", ErrAuthorizationDenied)
+			signalWireError(connection, err)
+			return err
 		}
 	}
 	outgoing, _, err := db.batchesForRanges(remoteRanges)
 	if err != nil {
+		signalWireError(connection, err)
 		return err
 	}
 	if len(remoteRanges) != 0 && len(outgoing) == 0 {
-		return fmt.Errorf("%w: requested direct actor range is unavailable", ErrCausalGap)
+		err := fmt.Errorf("%w: requested direct actor range is unavailable", ErrCausalGap)
+		signalWireError(connection, err)
+		return err
 	}
 	writeErr := make(chan error, 1)
 	go func() {
@@ -1394,7 +1457,7 @@ round:
 			}
 			goto round
 		case wireError:
-			return fmt.Errorf("peer error: %s", string(payload))
+			return decodeWireError(payload)
 		default:
 			return ErrCorruption
 		}
@@ -1410,6 +1473,9 @@ exchangeDigest:
 	kind, payload, err = readWireFrame(reader)
 	if err != nil {
 		return err
+	}
+	if kind == wireError {
+		return decodeWireError(payload)
 	}
 	if kind != wireDigest {
 		return ErrCorruption
