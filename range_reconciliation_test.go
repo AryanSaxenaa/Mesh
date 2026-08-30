@@ -50,3 +50,30 @@ func TestRangeSelectionKeepsWholeBatch(t *testing.T) {
 		t.Fatalf("range split atomic batch: %#v", batches)
 	}
 }
+
+func TestMissingActorRangesOnlyRequestsDirectPeer(t *testing.T) {
+	peer, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := VersionVector{ActorID(peer): 4}
+	remote := VersionVector{
+		ActorID(peer):    maxSyncRangeSpan + 6,
+		ActorID(foreign): 99,
+	}
+	ranges, err := missingActorRanges(local, remote, ActorID(peer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ranges) != 2 {
+		t.Fatalf("range count = %d, want 2", len(ranges))
+	}
+	if ranges[0] != (actorRange{actor: ActorID(peer), first: 5, last: maxSyncRangeSpan + 4}) ||
+		ranges[1] != (actorRange{actor: ActorID(peer), first: maxSyncRangeSpan + 5, last: maxSyncRangeSpan + 6}) {
+		t.Fatalf("direct peer ranges = %#v", ranges)
+	}
+}

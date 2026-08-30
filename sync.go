@@ -1004,24 +1004,31 @@ func decodeActorRanges(data []byte) ([]actorRange, error) {
 	return ranges, decoded.done()
 }
 
-// missingActorRanges describes the contiguous suffixes local needs from remote.
-func missingActorRanges(local, remote VersionVector) []actorRange {
-	ranges := make([]actorRange, 0)
-	for actor, last := range remote {
-		for first := local[actor] + 1; first != 0 && first <= last; {
-			end := first + maxSyncRangeSpan - 1
-			if end < first || end > last {
-				end = last
-			}
-			ranges = append(ranges, actorRange{actor: actor, first: first, last: end})
-			if end == last {
-				break
-			}
-			first = end + 1
-		}
+// missingActorRanges describes the bounded contiguous suffix local needs from
+// the directly connected actor. Direct-peer batches are signed by that actor,
+// so requesting any other actor's history would be an unsupported relay.
+func missingActorRanges(local, remote VersionVector, actor ActorID) ([]actorRange, error) {
+	last := remote[actor]
+	first := local[actor] + 1
+	if first == 0 || first > last {
+		return nil, nil
 	}
-	sort.Slice(ranges, func(i, j int) bool { return idCompare(ID(ranges[i].actor), ID(ranges[j].actor)) < 0 })
-	return ranges
+	ranges := make([]actorRange, 0, 1)
+	for first <= last {
+		if len(ranges) == maxSyncRanges {
+			return nil, ErrResourceLimit
+		}
+		end := first + maxSyncRangeSpan - 1
+		if end < first || end > last {
+			end = last
+		}
+		ranges = append(ranges, actorRange{actor: actor, first: first, last: end})
+		if end == last {
+			break
+		}
+		first = end + 1
+	}
+	return ranges, nil
 }
 
 func (db *DB) batchesForRanges(ranges []actorRange) []Batch {
@@ -1186,7 +1193,10 @@ func (db *DB) syncConnection(ctx context.Context, connection *tls.Conn, identity
 	if err != nil {
 		return err
 	}
-	requestedRanges := missingActorRanges(status.Frontier, remoteClock)
+	requestedRanges, err := missingActorRanges(status.Frontier, remoteClock, remoteHello.actor)
+	if err != nil {
+		return err
+	}
 	if err := writeWireFrame(connection, wireRanges, encodeActorRanges(requestedRanges)); err != nil {
 		return err
 	}
