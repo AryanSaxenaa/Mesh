@@ -106,3 +106,40 @@ func TestRangeSelectionRejectsUnboundedResponse(t *testing.T) {
 		t.Fatalf("unbounded response error = %v", err)
 	}
 }
+
+func TestActorRangeCodecRejectsMalformedRequests(t *testing.T) {
+	first, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idCompare(first, second) > 0 {
+		first, second = second, first
+	}
+	valid := actorRange{actor: ActorID(first), first: 1, last: 1}
+	cases := []struct {
+		name string
+		data []byte
+	}{
+		{"zero actor", encodeActorRanges([]actorRange{{first: 1, last: 1}})},
+		{"zero sequence", encodeActorRanges([]actorRange{{actor: ActorID(first), last: 1}})},
+		{"duplicate actor", encodeActorRanges([]actorRange{valid, {actor: ActorID(first), first: 2, last: 2}})},
+		{"descending actor", encodeActorRanges([]actorRange{{actor: ActorID(second), first: 1, last: 1}, valid})},
+		{"trailing bytes", append(encodeActorRanges([]actorRange{valid}), 0)},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := decodeActorRanges(test.data); !errors.Is(err, ErrCorruption) {
+				t.Fatalf("decode error = %v", err)
+			}
+		})
+	}
+	var encoded encoder
+	encoded.u(maxSyncRanges + 1)
+	if _, err := decodeActorRanges(encoded.Bytes()); !errors.Is(err, ErrCorruption) {
+		t.Fatalf("excessive count error = %v", err)
+	}
+}
