@@ -3,6 +3,7 @@ package mesh0
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 )
 
@@ -45,9 +46,12 @@ func TestRangeSelectionKeepsWholeBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	actor := db.ActorID()
-	batches, err := db.batchesForRanges([]actorRange{{actor: actor, first: 2, last: 2}})
+	batches, more, err := db.batchesForRanges([]actorRange{{actor: actor, first: 2, last: 2}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if more {
+		t.Fatal("single matching batch reported continuation")
 	}
 	if len(batches) != 1 || batches[0].Count != 2 || batches[0].First.Seq != 1 {
 		t.Fatalf("range split atomic batch: %#v", batches)
@@ -81,7 +85,7 @@ func TestMissingActorRangesOnlyRequestsDirectPeer(t *testing.T) {
 	}
 }
 
-func TestRangeSelectionRejectsUnboundedResponse(t *testing.T) {
+func TestRangeSelectionPaginatesBoundedResponse(t *testing.T) {
 	db := newTestDB(t)
 	actor := db.ActorID()
 	db.mu.Lock()
@@ -101,9 +105,17 @@ func TestRangeSelectionRejectsUnboundedResponse(t *testing.T) {
 		}
 	}
 	db.mu.Unlock()
-	_, err := db.batchesForRanges([]actorRange{{actor: actor, first: 1, last: maxSyncResponseBatches + 1}})
-	if !errors.Is(err, ErrResourceLimit) {
-		t.Fatalf("unbounded response error = %v", err)
+	batches, more, err := db.batchesForRanges([]actorRange{{actor: actor, first: 1, last: maxSyncResponseBatches + 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !more || len(batches) != maxSyncResponseBatches {
+		t.Fatalf("bounded response = %d batches, more=%v", len(batches), more)
+	}
+	for index, batch := range batches {
+		if batch.First.Seq != uint64(index+1) {
+			t.Fatalf("page batch %d sequence = %d", index, batch.First.Seq)
+		}
 	}
 }
 
@@ -141,5 +153,47 @@ func TestActorRangeCodecRejectsMalformedRequests(t *testing.T) {
 	encoded.u(maxSyncRanges + 1)
 	if _, err := decodeActorRanges(encoded.Bytes()); !errors.Is(err, ErrCorruption) {
 		t.Fatalf("excessive count error = %v", err)
+	}
+}
+
+func TestDirectRangeSyncConvergesAcrossResponsePages(t *testing.T) {
+	source := newTestDB(t)
+	archive := filepath.Join(t.TempDir(), "seed.zip")
+	if err := source.Backup(context.Background(), archive, false); err != nil {
+		t.Fatal(err)
+	}
+	destinationPath := filepath.Join(t.TempDir(), "destination")
+	if err := Restore(archive, destinationPath); err != nil {
+		t.Fatal(err)
+	}
+	destination, err := Open(destinationPath, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = destination.Close() })
+	if _, err := destination.RotateActor(); err != nil {
+		t.Fatal(err)
+	}
+	syncAuthorizedPair(t, source, destination, "tasks")
+	for index := 0; index < maxSyncResponseBatches+1; index++ {
+		if err := source.Update(context.Background(), func(tx *Tx) error {
+			return tx.Document("tasks", "one").Set("value", Int(int64(index)))
+		}); err != nil {
+			t.Fatalf("write %d: %v", index, err)
+		}
+	}
+	if err := SyncPair(context.Background(), source, destination); err != nil {
+		t.Fatalf("paginated sync: %v", err)
+	}
+	sourceStatus, err := source.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	destinationStatus, err := destination.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceStatus.Frontier.Compare(destinationStatus.Frontier) != ClockEqual || sourceStatus.LogicalDigest != destinationStatus.LogicalDigest {
+		t.Fatal("paginated range sync did not converge")
 	}
 }

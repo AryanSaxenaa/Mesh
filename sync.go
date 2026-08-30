@@ -2,6 +2,7 @@ package mesh0
 
 import (
 	"bufio"
+	"container/heap"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -39,6 +40,7 @@ const (
 	maxPendingBytes                    = 64 << 20
 	maxSyncResponseBatches             = maxPendingBatches
 	maxSyncResponseBytes               = maxPendingBytes
+	maxSyncRounds                      = 4096
 	wireHello                   byte   = 1
 	wireClock                   byte   = 2
 	wireBatch                   byte   = 3
@@ -1033,39 +1035,77 @@ func missingActorRanges(local, remote VersionVector, actor ActorID) ([]actorRang
 	return ranges, nil
 }
 
-// batchesForRanges selects a bounded, whole-batch response for direct range
-// reconciliation. It refuses oversized responses rather than truncating them:
-// the current protocol has no continuation round, and a partial response would
-// make the final frontier/digest exchange ambiguous.
-func (db *DB) batchesForRanges(ranges []actorRange) ([]Batch, error) {
+// batchMaxHeap retains the earliest direct-actor transaction batches without
+// materializing an unbounded matching history. Its root is the latest batch.
+type batchMaxHeap []Batch
+
+func (h batchMaxHeap) Len() int           { return len(h) }
+func (h batchMaxHeap) Less(i, j int) bool { return h[i].First.Compare(h[j].First) > 0 }
+func (h batchMaxHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *batchMaxHeap) Push(value any)    { *h = append(*h, value.(Batch)) }
+func (h *batchMaxHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	value := old[last]
+	*h = old[:last]
+	return value
+}
+
+// batchesForRanges selects the earliest bounded, whole-batch response page for
+// direct range reconciliation. The caller repeats a fresh authenticated round
+// when more history remains; batches are never split or silently discarded.
+func (db *DB) batchesForRanges(ranges []actorRange) ([]Batch, bool, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
-	batches := make([]Batch, 0)
-	responseBytes := 0
+	selected := make(batchMaxHeap, 0, maxSyncResponseBatches+1)
+	heap.Init(&selected)
+	more := false
 	for _, batch := range db.state.Batches {
 		end := batch.First.Seq + uint64(batch.Count) - 1
-		selected := false
+		matches := false
 		for _, interval := range ranges {
 			if batch.First.Actor == interval.actor && batch.First.Seq <= interval.last && end >= interval.first {
-				selected = true
+				matches = true
 				break
 			}
 		}
-		if !selected {
+		if !matches {
 			continue
 		}
+		if selected.Len() < maxSyncResponseBatches+1 {
+			heap.Push(&selected, batch)
+			continue
+		}
+		more = true
+		if batch.First.Compare(selected[0].First) < 0 {
+			selected[0] = batch
+			heap.Fix(&selected, 0)
+		}
+	}
+	batches := append([]Batch(nil), selected...)
+	BatchSort(batches)
+	responseBytes := 0
+	pageEnd := len(batches)
+	for index, batch := range batches {
 		canonical, err := batch.MarshalBinary()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		if len(batches) >= maxSyncResponseBatches || responseBytes+len(canonical) > maxSyncResponseBytes {
-			return nil, ErrResourceLimit
+		if responseBytes+len(canonical) > maxSyncResponseBytes {
+			pageEnd = index
+			more = true
+			break
 		}
-		batches = append(batches, batch)
 		responseBytes += len(canonical)
 	}
-	BatchSort(batches)
-	return batches, nil
+	if pageEnd == 0 && len(batches) != 0 {
+		return nil, false, ErrResourceLimit
+	}
+	if len(batches) > maxSyncResponseBatches {
+		pageEnd = maxSyncResponseBatches
+		more = true
+	}
+	return batches[:pageEnd], more, nil
 }
 
 func (db *DB) batchesMissing(remote VersionVector) []Batch {
@@ -1199,6 +1239,17 @@ func (db *DB) syncConnection(ctx context.Context, connection *tls.Conn, identity
 		return fmt.Errorf("%w: peer actor is not explicitly bound to its key", ErrAuthorizationDenied)
 	}
 
+	sent := 0
+	rounds := 0
+round:
+	if rounds == maxSyncRounds {
+		return ErrResourceLimit
+	}
+	rounds++
+	status, err = db.Status()
+	if err != nil {
+		return err
+	}
 	if err := writeWireFrame(connection, wireClock, encodeClock(status.Frontier)); err != nil {
 		return err
 	}
@@ -1236,9 +1287,12 @@ func (db *DB) syncConnection(ctx context.Context, connection *tls.Conn, identity
 			return fmt.Errorf("%w: direct peer requested a foreign actor range", ErrAuthorizationDenied)
 		}
 	}
-	outgoing, err := db.batchesForRanges(remoteRanges)
+	outgoing, _, err := db.batchesForRanges(remoteRanges)
 	if err != nil {
 		return err
+	}
+	if len(remoteRanges) != 0 && len(outgoing) == 0 {
+		return fmt.Errorf("%w: requested direct actor range is unavailable", ErrCausalGap)
 	}
 	writeErr := make(chan error, 1)
 	go func() {
@@ -1313,7 +1367,11 @@ func (db *DB) syncConnection(ctx context.Context, connection *tls.Conn, identity
 			if len(pending) != 0 {
 				return fmt.Errorf("%w: unresolved remote dependency", ErrCausalGap)
 			}
-			goto exchangeDigest
+			sent += len(outgoing)
+			if len(requestedRanges) == 0 && len(remoteRanges) == 0 {
+				goto exchangeDigest
+			}
+			goto round
 		case wireError:
 			return fmt.Errorf("peer error: %s", string(payload))
 		default:
@@ -1345,7 +1403,7 @@ exchangeDigest:
 	if final.LogicalDigest != remoteDigest {
 		return fmt.Errorf("%w: peer logical digest differs", ErrCorruption)
 	}
-	db.logger.Info("sync.converged", "peer", peerFingerprint(remoteHello.public), "operations_sent", len(outgoing))
+	db.logger.Info("sync.converged", "peer", peerFingerprint(remoteHello.public), "operations_sent", sent, "rounds", rounds)
 	return nil
 }
 
