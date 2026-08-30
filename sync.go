@@ -37,6 +37,8 @@ const (
 	maxWireFrame                       = maxBatchBytes + 4096
 	maxPendingBatches                  = 1024
 	maxPendingBytes                    = 64 << 20
+	maxSyncResponseBatches             = maxPendingBatches
+	maxSyncResponseBytes               = maxPendingBytes
 	wireHello                   byte   = 1
 	wireClock                   byte   = 2
 	wireBatch                   byte   = 3
@@ -1031,21 +1033,39 @@ func missingActorRanges(local, remote VersionVector, actor ActorID) ([]actorRang
 	return ranges, nil
 }
 
-func (db *DB) batchesForRanges(ranges []actorRange) []Batch {
+// batchesForRanges selects a bounded, whole-batch response for direct range
+// reconciliation. It refuses oversized responses rather than truncating them:
+// the current protocol has no continuation round, and a partial response would
+// make the final frontier/digest exchange ambiguous.
+func (db *DB) batchesForRanges(ranges []actorRange) ([]Batch, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	batches := make([]Batch, 0)
+	responseBytes := 0
 	for _, batch := range db.state.Batches {
 		end := batch.First.Seq + uint64(batch.Count) - 1
+		selected := false
 		for _, interval := range ranges {
 			if batch.First.Actor == interval.actor && batch.First.Seq <= interval.last && end >= interval.first {
-				batches = append(batches, batch)
+				selected = true
 				break
 			}
 		}
+		if !selected {
+			continue
+		}
+		canonical, err := batch.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		if len(batches) >= maxSyncResponseBatches || responseBytes+len(canonical) > maxSyncResponseBytes {
+			return nil, ErrResourceLimit
+		}
+		batches = append(batches, batch)
+		responseBytes += len(canonical)
 	}
 	BatchSort(batches)
-	return batches
+	return batches, nil
 }
 
 func (db *DB) batchesMissing(remote VersionVector) []Batch {
@@ -1216,7 +1236,10 @@ func (db *DB) syncConnection(ctx context.Context, connection *tls.Conn, identity
 			return fmt.Errorf("%w: direct peer requested a foreign actor range", ErrAuthorizationDenied)
 		}
 	}
-	outgoing := db.batchesForRanges(remoteRanges)
+	outgoing, err := db.batchesForRanges(remoteRanges)
+	if err != nil {
+		return err
+	}
 	writeErr := make(chan error, 1)
 	go func() {
 		for _, batch := range outgoing {

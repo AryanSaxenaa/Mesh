@@ -45,7 +45,10 @@ func TestRangeSelectionKeepsWholeBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	actor := db.ActorID()
-	batches := db.batchesForRanges([]actorRange{{actor: actor, first: 2, last: 2}})
+	batches, err := db.batchesForRanges([]actorRange{{actor: actor, first: 2, last: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(batches) != 1 || batches[0].Count != 2 || batches[0].First.Seq != 1 {
 		t.Fatalf("range split atomic batch: %#v", batches)
 	}
@@ -75,5 +78,31 @@ func TestMissingActorRangesOnlyRequestsDirectPeer(t *testing.T) {
 	if ranges[0] != (actorRange{actor: ActorID(peer), first: 5, last: maxSyncRangeSpan + 4}) ||
 		ranges[1] != (actorRange{actor: ActorID(peer), first: maxSyncRangeSpan + 5, last: maxSyncRangeSpan + 6}) {
 		t.Fatalf("direct peer ranges = %#v", ranges)
+	}
+}
+
+func TestRangeSelectionRejectsUnboundedResponse(t *testing.T) {
+	db := newTestDB(t)
+	actor := db.ActorID()
+	db.mu.Lock()
+	for seq := uint64(1); seq <= maxSyncResponseBatches+1; seq++ {
+		dot := Dot{Actor: actor, Seq: seq}
+		db.state.Batches[dot] = Batch{
+			First:        dot,
+			Count:        1,
+			Dependencies: VersionVector{},
+			Operations: []Operation{{
+				Dot:      dot,
+				Document: DocumentKey{Collection: "tasks", ID: "one"},
+				Path:     []string{"value"},
+				Action:   MapAssign,
+				Value:    String("value"),
+			}},
+		}
+	}
+	db.mu.Unlock()
+	_, err := db.batchesForRanges([]actorRange{{actor: actor, first: 1, last: maxSyncResponseBatches + 1}})
+	if !errors.Is(err, ErrResourceLimit) {
+		t.Fatalf("unbounded response error = %v", err)
 	}
 }
