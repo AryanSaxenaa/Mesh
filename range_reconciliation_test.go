@@ -2,6 +2,7 @@ package mesh0
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -195,5 +196,49 @@ func TestDirectRangeSyncConvergesAcrossResponsePages(t *testing.T) {
 	}
 	if sourceStatus.Frontier.Compare(destinationStatus.Frontier) != ClockEqual || sourceStatus.LogicalDigest != destinationStatus.LogicalDigest {
 		t.Fatal("paginated range sync did not converge")
+	}
+}
+
+func TestSyncHelloNegotiatesRequiredCapabilities(t *testing.T) {
+	database, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hello := syncHello{
+		database:     DatabaseID(database),
+		actor:        ActorID(actor),
+		public:       make(ed25519.PublicKey, ed25519.PublicKeySize),
+		capabilities: syncSupportedCapabilities | (1 << 17),
+	}
+	decoded, err := decodeHello(hello.encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.database != hello.database || decoded.actor != hello.actor || string(decoded.public) != string(hello.public) || decoded.capabilities != hello.capabilities {
+		t.Fatalf("hello round trip = %#v", decoded)
+	}
+	negotiated, err := negotiateSyncCapabilities(syncSupportedCapabilities, decoded.capabilities)
+	if err != nil || negotiated != syncSupportedCapabilities {
+		t.Fatalf("negotiated capabilities = %b, %v", negotiated, err)
+	}
+	if _, err := negotiateSyncCapabilities(syncSupportedCapabilities, 0); !errors.Is(err, ErrProtocolIncompatible) {
+		t.Fatalf("missing capability error = %v", err)
+	}
+	var legacy encoder
+	legacy.raw([]byte("M0HL"))
+	legacy.u(syncProtocolGeneration - 1)
+	legacy.id(database)
+	legacy.id(actor)
+	legacy.bytes(hello.public)
+	if _, err := decodeHello(legacy.Bytes()); !errors.Is(err, ErrProtocolIncompatible) {
+		t.Fatalf("legacy hello error = %v", err)
+	}
+	truncated := hello.encode()[:len(hello.encode())-1]
+	if _, err := decodeHello(truncated); !errors.Is(err, ErrCorruption) {
+		t.Fatalf("truncated capability error = %v", err)
 	}
 }

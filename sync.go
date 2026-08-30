@@ -24,30 +24,34 @@ import (
 )
 
 const (
-	peerIdentityName                   = "PEER_IDENTITY"
-	actorBindingsName                  = "ACTOR_BINDINGS"
-	actorWriteGrantsName               = "ACTOR_WRITE_GRANTS"
-	peersDir                           = "peers"
-	actorBindingGeneration             = 1
-	actorWriteGrantGeneration          = 1
-	maxActorBindings                   = 4096
-	maxWriteCollectionsPerActor        = 256
-	maxActorWriteGrants                = 4096
-	maxSyncRanges                      = 4096
-	maxSyncRangeSpan            uint64 = 1 << 20
-	maxWireFrame                       = maxBatchBytes + 4096
-	maxPendingBatches                  = 1024
-	maxPendingBytes                    = 64 << 20
-	maxSyncResponseBatches             = maxPendingBatches
-	maxSyncResponseBytes               = maxPendingBytes
-	maxSyncRounds                      = 4096
-	wireHello                   byte   = 1
-	wireClock                   byte   = 2
-	wireBatch                   byte   = 3
-	wireDone                    byte   = 4
-	wireDigest                  byte   = 5
-	wireError                   byte   = 6
-	wireRanges                  byte   = 7
+	peerIdentityName                     = "PEER_IDENTITY"
+	actorBindingsName                    = "ACTOR_BINDINGS"
+	actorWriteGrantsName                 = "ACTOR_WRITE_GRANTS"
+	peersDir                             = "peers"
+	actorBindingGeneration               = 1
+	actorWriteGrantGeneration            = 1
+	maxActorBindings                     = 4096
+	maxWriteCollectionsPerActor          = 256
+	maxActorWriteGrants                  = 4096
+	maxSyncRanges                        = 4096
+	maxSyncRangeSpan              uint64 = 1 << 20
+	maxWireFrame                         = maxBatchBytes + 4096
+	maxPendingBatches                    = 1024
+	maxPendingBytes                      = 64 << 20
+	maxSyncResponseBatches               = maxPendingBatches
+	maxSyncResponseBytes                 = maxPendingBytes
+	maxSyncRounds                        = 4096
+	syncProtocolGeneration        uint64 = 2
+	syncCapabilityRangePagination uint64 = 1 << 0
+	syncRequiredCapabilities             = syncCapabilityRangePagination
+	syncSupportedCapabilities            = syncCapabilityRangePagination
+	wireHello                     byte   = 1
+	wireClock                     byte   = 2
+	wireBatch                     byte   = 3
+	wireDone                      byte   = 4
+	wireDigest                    byte   = 5
+	wireError                     byte   = 6
+	wireRanges                    byte   = 7
 )
 
 type PeerConfig struct {
@@ -886,18 +890,20 @@ func decodeSignedBatch(payload []byte, public ed25519.PublicKey, expectedDatabas
 }
 
 type syncHello struct {
-	database DatabaseID
-	actor    ActorID
-	public   ed25519.PublicKey
+	database     DatabaseID
+	actor        ActorID
+	public       ed25519.PublicKey
+	capabilities uint64
 }
 
 func (h syncHello) encode() []byte {
 	var encoded encoder
 	encoded.raw([]byte("M0HL"))
-	encoded.u(uint64(formatGeneration))
+	encoded.u(syncProtocolGeneration)
 	encoded.id(ID(h.database))
 	encoded.id(ID(h.actor))
 	encoded.bytes(h.public)
+	encoded.u(h.capabilities)
 	return encoded.Bytes()
 }
 func decodeHello(data []byte) (syncHello, error) {
@@ -908,8 +914,8 @@ func decodeHello(data []byte) (syncHello, error) {
 		return hello, ErrCorruption
 	}
 	generation, err := decoded.u()
-	if err != nil || generation != formatGeneration {
-		return hello, ErrCorruption
+	if err != nil || generation != syncProtocolGeneration {
+		return hello, ErrProtocolIncompatible
 	}
 	database, err := decoded.id()
 	if err != nil {
@@ -923,11 +929,23 @@ func decodeHello(data []byte) (syncHello, error) {
 	if err != nil || len(key) != ed25519.PublicKeySize {
 		return hello, ErrCorruption
 	}
+	capabilities, err := decoded.u()
+	if err != nil {
+		return hello, ErrCorruption
+	}
 	if err := decoded.done(); err != nil {
 		return hello, err
 	}
-	hello.database, hello.actor, hello.public = DatabaseID(database), ActorID(actor), ed25519.PublicKey(key)
+	hello.database, hello.actor, hello.public, hello.capabilities = DatabaseID(database), ActorID(actor), ed25519.PublicKey(key), capabilities
 	return hello, nil
+}
+
+func negotiateSyncCapabilities(local, remote uint64) (uint64, error) {
+	negotiated := local & remote
+	if negotiated&syncRequiredCapabilities != syncRequiredCapabilities {
+		return 0, ErrProtocolIncompatible
+	}
+	return negotiated, nil
 }
 func encodeClock(clock VersionVector) []byte {
 	var encoded encoder
@@ -1200,7 +1218,7 @@ func (db *DB) syncConnection(ctx context.Context, connection *tls.Conn, identity
 	if err != nil {
 		return err
 	}
-	localHello := syncHello{database: status.DatabaseID, actor: status.ActorID, public: identity.public}
+	localHello := syncHello{database: status.DatabaseID, actor: status.ActorID, public: identity.public, capabilities: syncSupportedCapabilities}
 	if err := writeWireFrame(connection, wireHello, localHello.encode()); err != nil {
 		return err
 	}
@@ -1213,6 +1231,9 @@ func (db *DB) syncConnection(ctx context.Context, connection *tls.Conn, identity
 	}
 	remoteHello, err := decodeHello(payload)
 	if err != nil {
+		return err
+	}
+	if _, err := negotiateSyncCapabilities(localHello.capabilities, remoteHello.capabilities); err != nil {
 		return err
 	}
 	if remoteHello.database != status.DatabaseID {
