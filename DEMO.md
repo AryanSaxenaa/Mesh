@@ -13,10 +13,9 @@ The one-laptop demo uses two folders as two logical devices. That exercises
 the same database identities, actor identities, TLS handshake, key pinning,
 authorization checks, and network protocol used between computers.
 
-```powershell
-go build -o mesh0.exe ./cmd/mesh0
-.\scripts\demo-peer-sync.ps1
-```
+Use the commands in the README's [two-device guide](README.md#two-devices-no-central-server)
+to create and pair replicas. The workflow leaves both replica folders available
+for inspection.
 
 Expected ending:
 
@@ -25,11 +24,10 @@ MESH0 PEER-SYNC DEMO PASSED
 Device A received device B's offline update over authenticated localhost TLS.
 ```
 
-The script retains its timestamped `mesh0-demo-*` directory. Show the synced
-document from device A:
+Show the synced document from device A:
 
 ```powershell
-.\mesh0.exe get .\mesh0-demo-<timestamp>\device-a tasks/2
+.\mesh0.exe get .\video-demo\device-a tasks/2
 ```
 
 ## What to point out during a demo

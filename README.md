@@ -21,22 +21,19 @@ storage engine, not a synchronization demo: it includes a durable write-ahead
 log, crash recovery, snapshots, backups, content-addressed blobs, queries,
 and authenticated direct replication.
 
+## Watch the demo
+
+[▶ Watch the Mesh0 walkthrough on YouTube](https://www.youtube.com/watch?v=YOUR_VIDEO_ID)
+
+> Replace `YOUR_VIDEO_ID` with the published YouTube video ID.
+
 ## Judge demo: two devices on one laptop
 
-No second laptop is required to demonstrate the full peer-sync path. This
-script creates two independent logical devices, makes an offline update on
-device B, pairs the devices with pinned keys and a collection grant, then
-proves that device A receives B's update over localhost TLS.
-
-```powershell
-go build -o mesh0.exe ./cmd/mesh0
-.\scripts\demo-peer-sync.ps1
-```
-
-The final line is `MESH0 PEER-SYNC DEMO PASSED`. The created replica folders
-are intentionally retained so judges can inspect their state afterwards. See
-[DEMO.md](DEMO.md) for the story, expected output, and the physical-device
-setup.
+No second laptop is required to demonstrate peer synchronization. Create two
+replica folders, make an offline update in one, then use `serve` and `sync` to
+prove the update appears in the other. The complete operator flow is below in
+[Two devices, no central server](#two-devices-no-central-server), and the
+project story is in [DEMO.md](DEMO.md).
 
 ## Why it matters
 
@@ -54,6 +51,21 @@ Mesh0 makes a different trade-off:
   rather than using last-write-wins based on unreliable wall-clock time.
 - **Trust explicitly.** Replication uses TLS 1.3, pinned Ed25519 keys, and
   per-collection write grants.
+
+## What you can do today
+
+| Need | Mesh0 command |
+| --- | --- |
+| Store or update a document | `mesh0 put PATH COLLECTION/ID field=value` |
+| Find matching documents | `mesh0 query PATH COLLECTION --where field=value` |
+| Search a text prefix | `mesh0 query PATH COLLECTION --prefix field=text` |
+| Audit a record | `mesh0 history PATH COLLECTION/ID` |
+| Verify and preserve data | `mesh0 verify PATH`, `snapshot`, `backup`, `restore` |
+| Work across trusted devices | `replica create`, `peer add`, `peer grant`, `serve`, `sync` |
+
+Mesh0’s CLI is intentionally small, but it operates a full embedded storage
+engine: writes are durable, queries run locally, and replication reconciles
+authorized history directly between peers.
 
 ## See it work in one minute
 

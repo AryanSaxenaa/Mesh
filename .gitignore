@@ -1,2 +1,9 @@
 # Generated agent review artifacts
 semantic-review/
+
+# Local builds, databases, and rendered showcase artifacts
+mesh0.exe
+my-data/
+video-demo/
+VIDEO_SCRIPT.md
+showcase-video/
