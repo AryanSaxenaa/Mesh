@@ -1,33 +1,38 @@
 # Mesh0
 
-[![ci](https://github.com/mesh0/mesh0/actions/workflows/ci.yml/badge.svg)](https://github.com/mesh0/mesh0/actions/workflows/ci.yml)
+[![ci](https://github.com/AryanSaxenaa/Mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/AryanSaxenaa/Mesh/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![zero third-party deps](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](deps-proof.txt)
 
-**Zero Dependency Hackathon — Track D (Data & Storage).**
-A local database that keeps working when the network does not, then merges
-trusted devices without a central server.
+**Mesh0 is an embedded, local-first document database for Go.** Every device
+can write durable data while offline, then synchronize directly with trusted
+peers when a network route becomes available.
 
-Imagine two field workers updating the same inspection checklist from different
-laptops with no reliable connection. With a typical database, one device is
-offline, waits for a server, or overwrites the other person's work later.
-With Mesh0, each laptop writes to its own durable local database immediately.
-When the laptops reconnect, they exchange changes directly. Independent edits
-merge; competing edits are retained as visible conflicts instead of one being
-silently discarded.
+Imagine two field workers updating the same inspection checklist from laptops
+with unreliable connectivity. Instead of waiting for a server, each laptop
+writes to its own local database immediately. When the laptops reconnect,
+Mesh0 exchanges their missing changes directly. Independent edits merge;
+competing edits remain visible conflicts instead of being silently overwritten.
 
-Mesh0 is an embedded, local-first document database for Go. It is a working
-storage engine, not a synchronization demo: it includes a durable write-ahead
-log, crash recovery, snapshots, backups, content-addressed blobs, queries,
-and authenticated direct replication.
+It is a working storage engine, not a synchronization mock-up: durable
+write-ahead logging, crash recovery, snapshots, backups, local queries,
+content-addressed blobs, and authenticated peer-to-peer replication are all
+included.
 
-## Watch the demo
+## Peer-to-peer by design
 
-[▶ Watch the Mesh0 walkthrough on YouTube](https://www.youtube.com/watch?v=YOUR_VIDEO_ID)
+Mesh0 has no central server, primary replica, or cloud account. A trusted peer
+starts `serve`; another trusted peer runs `sync`. The connection uses TLS 1.3
+with pinned Ed25519 public keys, and each peer receives explicit write grants
+for only the collections it is allowed to modify.
+
+## Watch the walkthrough
+
+[Watch the Mesh0 walkthrough on YouTube](https://www.youtube.com/watch?v=YOUR_VIDEO_ID)
 
 > Replace `YOUR_VIDEO_ID` with the published YouTube video ID.
 
-## Judge demo: two devices on one laptop
+## Try peer-to-peer sync on one laptop
 
 No second laptop is required to demonstrate peer synchronization. Create two
 replica folders, make an offline update in one, then use `serve` and `sync` to
@@ -63,9 +68,15 @@ Mesh0 makes a different trade-off:
 | Verify and preserve data | `mesh0 verify PATH`, `snapshot`, `backup`, `restore` |
 | Work across trusted devices | `replica create`, `peer add`, `peer grant`, `serve`, `sync` |
 
-Mesh0’s CLI is intentionally small, but it operates a full embedded storage
+Mesh0's CLI is intentionally small, but it operates a full embedded storage
 engine: writes are durable, queries run locally, and replication reconciles
 authorized history directly between peers.
+
+## Hackathon context
+
+Mesh0 was built for the Zero Dependency Hackathon, Track D: Data & Storage.
+The project deliberately uses Go's standard library only, with the runtime
+module graph recorded in [deps-proof.txt](deps-proof.txt).
 
 ## See it work in one minute
 
@@ -91,7 +102,7 @@ and canonical state verification in one command.
 Every command writes its result to stdout on success and returns exit code
 `0`. On failure, the CLI writes a single `mesh0: <message>` line to stderr and
 returns a non-zero exit code: `2` for a malformed invocation (missing
-arguments, bad flags, invalid hex/IDs — anything matching `mesh0.ErrInvalidArgument`),
+arguments, bad flags, invalid hex/IDs - anything matching `mesh0.ErrInvalidArgument`),
 and `1` for every other failure (not found, corruption, authorization denied,
 I/O errors, and so on). A non-zero exit with a `mesh0:`-prefixed stderr line is
 expected, documented behavior, not a bug in the demo.
