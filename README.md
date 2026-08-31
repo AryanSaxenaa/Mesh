@@ -34,6 +34,10 @@ with `peer grant`, and use `peer revoke` to deny future remote writes. Revoking
 a grant cannot erase data previously disclosed to that peer. Both peers remain
 usable if the network or the serving peer disappears.
 
+## Queries and local indexes
+
+`DB.Query` provides bounded, conflict-aware local document queries. For repeated scalar equality queries, declare a process-local derived index with `EnsureEqualityIndex(context, mesh0.EqualityIndex{Collection: "tasks", Path: "status"})`. Indexes are rebuilt from canonical documents on every accepted local or remote transaction, are not replicated or stored in WALs/snapshots/backups, and must be re-declared after reopening a database. A concurrent register value is indexed in every matching equality bucket; `DB.ExplainQuery` reports whether a query uses an equality index or the canonical full-scan fallback.
+
 ## Guarantees and boundaries
 
 Mesh0 currently supplies causal, conflict-preserving map registers, observed-remove sets, additive counters, anchored list/text sequences, atomic transaction batches, append-only WAL recovery, snapshots, content-addressed blobs, verified backup/restore, and direct TLS replication. It does **not** provide global serializability, global uniqueness, a global leader, or offline enforcement of arbitrary distributed business invariants. Applications requiring those properties need explicit coordination.

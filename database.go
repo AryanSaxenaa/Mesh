@@ -44,6 +44,7 @@ type DB struct {
 	failed           error
 	actorKeys        map[ActorID]ed25519.PublicKey
 	actorWriteGrants map[ActorID]map[string]struct{}
+	indexes          *equalityIndexSnapshot
 	identityMu       sync.Mutex
 	subs             map[uint64]chan Change
 	nextSub          uint64
@@ -156,7 +157,7 @@ func Open(path string, options Options) (*DB, error) {
 	db := &DB{
 		path: path, state: root, manifest: m, durability: options.Durability,
 		maxSegmentBytes: options.MaxSegmentBytes, logger: options.Logger,
-		unlock: unlock, actorKeys: bindings, actorWriteGrants: grants, subs: map[uint64]chan Change{},
+		unlock: unlock, actorKeys: bindings, actorWriteGrants: grants, indexes: newEqualityIndexSnapshot(), subs: map[uint64]chan Change{},
 	}
 	db.logger.Info("database.open", "path", path, "actor", ID(m.Actor).String(), "documents", len(root.Documents))
 	return db, nil
@@ -356,6 +357,10 @@ func (db *DB) commitLocked(batch Batch, remote bool) error {
 	if err != nil {
 		return err
 	}
+	candidateIndexes, err := rebuildEqualityIndexes(context.Background(), candidate, cloneIndexDeclarations(db.indexes))
+	if err != nil {
+		return err
+	}
 	raw, err := batch.MarshalBinary()
 	if err != nil {
 		return err
@@ -378,6 +383,7 @@ func (db *DB) commitLocked(batch Batch, remote bool) error {
 		db.manifest = next
 	}
 	db.state = candidate
+	db.indexes = candidateIndexes
 	db.logger.Info("transaction.commit", "transaction", batch.ID(), "operations", batch.Count, "remote", remote)
 	db.publishLocked(Change{Batch: batch, Remote: remote, Frontier: candidate.Frontier.Clone(), OccurredAt: time.Now().UTC()})
 	return nil
