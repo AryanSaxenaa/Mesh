@@ -41,3 +41,24 @@ func FuzzDirectRangeDigestInputsNeverPanic(f *testing.F) {
 		_, _ = db.DirectRangeDigest(db.ActorID(), first, last)
 	})
 }
+
+func FuzzRangeDigestNodeDecodersNeverPanic(f *testing.F) {
+	f.Add(encodeRangeDigestNode(rangeDigestNode{}))
+	f.Add(encodeRangeDigestNodes(nil))
+	f.Add([]byte{1})
+	f.Fuzz(func(t *testing.T, input []byte) {
+		_, _ = decodeRangeDigestNode(input)
+		_, _ = decodeRangeDigestNodes(input)
+	})
+}
+
+func FuzzRangeDigestNodeForInputsNeverPanic(f *testing.F) {
+	f.Add(uint64(1), uint64(1))
+	f.Add(uint64(0), uint64(1))
+	f.Add(uint64(2), uint64(1))
+	f.Add(uint64(1), rangeDigestLeafSpan+1)
+	f.Fuzz(func(t *testing.T, first, last uint64) {
+		db := newTestDB(t)
+		_, _ = db.rangeDigestNodeFor(db.ActorID(), first, last)
+	})
+}

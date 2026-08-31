@@ -372,3 +372,147 @@ func TestRangeDigestNodeCodecIsBounded(t *testing.T) {
 		t.Fatalf("oversized digest node error = %v", err)
 	}
 }
+
+func TestRangeDigestChildrenAreDeterministicAndContiguous(t *testing.T) {
+	if children := rangeDigestChildren(1, 1); children != nil {
+		t.Fatalf("single-element span produced children: %#v", children)
+	}
+	children := rangeDigestChildren(1, 100)
+	if len(children) == 0 || len(children) > rangeDigestFanout {
+		t.Fatalf("child count = %d, want 1..%d", len(children), rangeDigestFanout)
+	}
+	if children[0].first != 1 || children[len(children)-1].last != 100 {
+		t.Fatalf("children do not cover the full span: %#v", children)
+	}
+	for index := 1; index < len(children); index++ {
+		if children[index].first != children[index-1].last+1 {
+			t.Fatalf("children are not contiguous: %#v", children)
+		}
+	}
+	again := rangeDigestChildren(1, 100)
+	if len(again) != len(children) {
+		t.Fatalf("children split is not deterministic: %#v vs %#v", again, children)
+	}
+	for index := range children {
+		if again[index] != children[index] {
+			t.Fatalf("children split is not deterministic at %d: %#v vs %#v", index, again[index], children[index])
+		}
+	}
+}
+
+func TestRangeDigestNodeForMatchesLeafAndRecursesConsistently(t *testing.T) {
+	db := newTestDB(t)
+	for index := 0; index < 5; index++ {
+		if err := db.Update(context.Background(), func(tx *Tx) error {
+			return tx.Document("tasks", "one").Set("value", Int(int64(index)))
+		}); err != nil {
+			t.Fatalf("write %d: %v", index, err)
+		}
+	}
+	actor := db.ActorID()
+	leaf, err := db.rangeDigestNodeFor(actor, 1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct, err := db.DirectRangeDigest(actor, 1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leaf.digest != direct {
+		t.Fatal("leaf-span digest node diverged from DirectRangeDigest")
+	}
+	again, err := db.rangeDigestNodeFor(actor, 1, 5)
+	if err != nil || again.digest != leaf.digest {
+		t.Fatalf("digest node is not stable: %x vs %x, %v", again.digest, leaf.digest, err)
+	}
+	if _, err := db.rangeDigestNodeFor(actor, 0, 1); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("invalid digest node range error = %v", err)
+	}
+	if _, err := db.rangeDigestNodeFor(actor, 2, 1); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("inverted digest node range error = %v", err)
+	}
+}
+
+func TestRangeDigestNodeForRecursesAboveLeafSpan(t *testing.T) {
+	db := newTestDB(t)
+	actor := db.ActorID()
+	last := rangeDigestLeafSpan + 1
+	db.mu.Lock()
+	for seq := uint64(1); seq <= last; seq++ {
+		dot := Dot{Actor: actor, Seq: seq}
+		db.state.Batches[dot] = Batch{
+			First:        dot,
+			Count:        1,
+			Dependencies: VersionVector{},
+			Operations: []Operation{{
+				Dot:      dot,
+				Document: DocumentKey{Collection: "tasks", ID: "one"},
+				Path:     []string{"value"},
+				Action:   MapAssign,
+				Value:    Int(int64(seq)),
+			}},
+		}
+	}
+	db.mu.Unlock()
+	node, err := db.rangeDigestNodeFor(actor, 1, last)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := db.DirectRangeDigest(actor, 1, last)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.digest == leaf {
+		t.Fatal("multi-child digest node collided with a whole-range leaf digest")
+	}
+	again, err := db.rangeDigestNodeFor(actor, 1, last)
+	if err != nil || again.digest != node.digest {
+		t.Fatalf("multi-child digest node is not stable: %x vs %x, %v", again.digest, node.digest, err)
+	}
+}
+
+func TestRangeDigestNodesCodecIsCanonicalAndBounded(t *testing.T) {
+	first, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idCompare(first, second) > 0 {
+		first, second = second, first
+	}
+	nodes := []rangeDigestNode{
+		{actor: ActorID(first), first: 1, last: 2, digest: [32]byte{1}},
+		{actor: ActorID(second), first: 3, last: 4, digest: [32]byte{2}},
+	}
+	decoded, err := decodeRangeDigestNodes(encodeRangeDigestNodes(nodes))
+	if err != nil || len(decoded) != len(nodes) {
+		t.Fatalf("digest nodes round trip = %#v, %v", decoded, err)
+	}
+	for index := range nodes {
+		if decoded[index] != nodes[index] {
+			t.Fatalf("digest node %d round trip = %#v, want %#v", index, decoded[index], nodes[index])
+		}
+	}
+	if _, err := decodeRangeDigestNodes([]byte{1}); !errors.Is(err, ErrCorruption) {
+		t.Fatalf("truncated digest nodes error = %v", err)
+	}
+	if _, err := decodeRangeDigestNodes(append(encodeRangeDigestNodes(nodes), 0)); !errors.Is(err, ErrCorruption) {
+		t.Fatalf("trailing bytes digest nodes error = %v", err)
+	}
+	descending := []rangeDigestNode{nodes[1], nodes[0]}
+	if _, err := decodeRangeDigestNodes(encodeRangeDigestNodes(descending)); !errors.Is(err, ErrCorruption) {
+		t.Fatalf("descending actor digest nodes error = %v", err)
+	}
+	oversized := rangeDigestNode{actor: nodes[0].actor, first: 1, last: maxSyncRangeSpan + 1}
+	if _, err := decodeRangeDigestNodes(encodeRangeDigestNodes([]rangeDigestNode{oversized})); !errors.Is(err, ErrCorruption) {
+		t.Fatalf("oversized digest nodes error = %v", err)
+	}
+	var encoded encoder
+	encoded.u(maxRangeDigestNodes + 1)
+	if _, err := decodeRangeDigestNodes(encoded.Bytes()); !errors.Is(err, ErrCorruption) {
+		t.Fatalf("excessive digest node count error = %v", err)
+	}
+}
