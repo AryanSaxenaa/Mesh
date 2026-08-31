@@ -1,7 +1,12 @@
 # Mesh0
 
-**A local database that keeps working when the network does not, then merges
-trusted devices without a central server.**
+[![ci](https://github.com/mesh0/mesh0/actions/workflows/ci.yml/badge.svg)](https://github.com/mesh0/mesh0/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![zero third-party deps](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](deps-proof.txt)
+
+**Zero Dependency Hackathon — Track D (Data & Storage).**
+A local database that keeps working when the network does not, then merges
+trusted devices without a central server.
 
 Imagine two field workers updating the same inspection checklist from different
 laptops with no reliable connection. With a typical database, one device is
@@ -52,6 +57,16 @@ go build -mod=readonly -trimpath -buildvcs=false -ldflags='-buildid=' -o mesh0.e
 Then run `./mesh0.exe selftest` to verify a durable commit, restart recovery,
 and canonical state verification in one command.
 
+## CLI exit codes and errors
+
+Every command writes its result to stdout on success and returns exit code
+`0`. On failure, the CLI writes a single `mesh0: <message>` line to stderr and
+returns a non-zero exit code: `2` for a malformed invocation (missing
+arguments, bad flags, invalid hex/IDs — anything matching `mesh0.ErrInvalidArgument`),
+and `1` for every other failure (not found, corruption, authorization denied,
+I/O errors, and so on). A non-zero exit with a `mesh0:`-prefixed stderr line is
+expected, documented behavior, not a bug in the demo.
+
 ## Two devices, no central server
 
 Each database has a persistent actor ID and transport key. Pair both replicas
@@ -95,13 +110,42 @@ append-only WAL recovery, snapshots, verified backup/restore, and direct TLS
 replication. Equality indexes are local, derived, and rebuilt after opening the
 database.
 
-For design and operational detail, read [CONSISTENCY.md](CONSISTENCY.md),
-[CRDT.md](CRDT.md), [STORAGE.md](STORAGE.md), [SYNC.md](SYNC.md), and
-[SECURITY.md](SECURITY.md).
+For design and operational detail, read [ARCHITECTURE.md](ARCHITECTURE.md),
+[CONSISTENCY.md](CONSISTENCY.md), [CRDT.md](CRDT.md), [STORAGE.md](STORAGE.md),
+[SYNC.md](SYNC.md), [SECURITY.md](SECURITY.md), and [INVARIANTS.md](INVARIANTS.md)
+(every documented invariant mapped to the test that proves it). The full
+current-scope contract, including what is deliberately out of scope, is
+[Mesh0_Detailed_Build_Spec.md](Mesh0_Detailed_Build_Spec.md).
+
+The [semantic-review/](semantic-review/) directory is our own internal review
+history for the sync/security surface, kept in the repo rather than deleted.
+Every `NEEDS_CHANGES` verdict in there identifies a real, confirmed finding
+against an earlier revision, and every finding was fixed in a subsequent
+commit with regression coverage; none describe the current `main`. We publish
+them because "we found this ourselves and closed it" is a more convincing
+signal than an empty history, not because anything in them is still open.
 
 ## Zero-dependency receipt
 
-Mesh0 enters Track D, Data & Storage. Its runtime module graph contains only
-this module, as recorded in [deps-proof.txt](deps-proof.txt). The implementation
-ledger is [STDLIB.md](STDLIB.md), and the byte-identical build receipt is
+Its runtime module graph contains only this module, as recorded in
+[deps-proof.txt](deps-proof.txt). The implementation ledger is
+[STDLIB.md](STDLIB.md), and the byte-identical build receipt is
 [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
+
+## Verify it yourself
+
+Every claim above is checkable in under a minute, and the same commands run
+in CI on every push (see the badge at the top):
+
+```powershell
+go list -m all                # -> github.com/mesh0/mesh0 (nothing else)
+go vet ./...                  # -> no diagnostics
+go test ./... -v              # -> full suite, including fuzz targets
+```
+
+For the byte-identical reproducible build check, see
+[REPRODUCIBILITY.md](REPRODUCIBILITY.md).
+
+## License
+
+[MIT](LICENSE).

@@ -1,5 +1,17 @@
-Expected output of `go list -m all`:
+Output of `go list -m all` (captured on this revision):
 
 github.com/mesh0/mesh0
 
 The module graph intentionally has no third-party requirements. Canonical builds use -mod=readonly and CGO_ENABLED=0.
+
+Verified locally with:
+  PS> go list -m all
+  github.com/mesh0/mesh0
+
+This exact command is also run on every push/PR in CI and fails the build if
+the module graph ever grows a second entry — see .github/workflows/ci.yml
+(job "verify", step "Zero-dependency proof"). CI also independently re-runs
+the two-build byte-identical reproducibility check on both Linux and Windows
+runners on every push, so that receipt is continuously re-verified rather
+than a one-time snapshot. Live run logs are visible under the repository's
+Actions tab for this commit.

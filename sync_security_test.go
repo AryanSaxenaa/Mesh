@@ -597,6 +597,129 @@ func TestTrustAndBindPeerActorRollsBackNewTrustOnBindingFailure(t *testing.T) {
 	}
 }
 
+func TestUntrustPeerRemovesTrustButKeepsBinding(t *testing.T) {
+	db := newTestDB(t)
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteID, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteActor := ActorID(remoteID)
+	if err := db.TrustAndBindPeerActor("remote", remoteActor, public); err != nil {
+		t.Fatal(err)
+	}
+	if !db.peerTrusted(public) {
+		t.Fatal("expected peer to be trusted after pairing")
+	}
+	if err := db.UntrustPeer(public); err != nil {
+		t.Fatal(err)
+	}
+	if db.peerTrusted(public) {
+		t.Fatal("expected peer trust to be removed")
+	}
+	found := false
+	for _, binding := range db.ActorBindings() {
+		if binding.Actor == remoteActor {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected actor binding to remain after untrusting the peer")
+	}
+	// Removing an already-untrusted key is idempotent.
+	if err := db.UntrustPeer(public); err != nil {
+		t.Fatalf("second UntrustPeer call returned error: %v", err)
+	}
+}
+
+func TestPairingIntentRecoveryFinishesInstalledBinding(t *testing.T) {
+	path := t.TempDir()
+	db, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteID, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteActor := ActorID(remoteID)
+	// Simulate a crash after bindPeerActor durably wrote the binding but
+	// before TrustPeer wrote the pin: journal the intent and the binding,
+	// but never call TrustPeer.
+	if err := writePairingIntent(path, pairingIntent{name: "remote", actor: remoteActor, public: clonePublicKey(public)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.bindPeerActor(remoteActor, public, false); err != nil {
+		t.Fatal(err)
+	}
+	if db.peerTrusted(public) {
+		t.Fatal("test setup should not have trusted the peer yet")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if !db.peerTrusted(public) {
+		t.Fatal("expected recovery to finish the journaled pairing by installing the trust pin")
+	}
+	if _, exists, err := readPairingIntent(path); err != nil || exists {
+		t.Fatalf("expected pairing intent journal to be cleared, exists=%v err=%v", exists, err)
+	}
+}
+
+func TestPairingIntentRecoveryDiscardsIncompleteBinding(t *testing.T) {
+	path := t.TempDir()
+	db, err := Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteID, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remoteActor := ActorID(remoteID)
+	// Simulate a crash after the intent was journaled but before the actor
+	// binding was ever made durable (e.g. bindPeerActor itself failed or the
+	// process died before writing ACTOR_BINDINGS).
+	if err := writePairingIntent(path, pairingIntent{name: "remote", actor: remoteActor, public: clonePublicKey(public)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if db.peerTrusted(public) {
+		t.Fatal("expected an incomplete pairing to be discarded rather than trusted")
+	}
+	for _, binding := range db.ActorBindings() {
+		if binding.Actor == remoteActor {
+			t.Fatal("expected no actor binding for an incomplete pairing")
+		}
+	}
+	if _, exists, err := readPairingIntent(path); err != nil || exists {
+		t.Fatalf("expected pairing intent journal to be cleared, exists=%v err=%v", exists, err)
+	}
+}
+
 func TestSyncRequiresPersistedPeerTrust(t *testing.T) {
 	db := newTestDB(t)
 	public, _, err := ed25519.GenerateKey(rand.Reader)

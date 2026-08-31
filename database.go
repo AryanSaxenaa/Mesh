@@ -46,6 +46,7 @@ type DB struct {
 	actorWriteGrants map[ActorID]map[string]struct{}
 	indexes          *equalityIndexSnapshot
 	identityMu       sync.Mutex
+	pairingMu        sync.Mutex
 	subs             map[uint64]chan Change
 	nextSub          uint64
 }
@@ -104,6 +105,9 @@ func Open(path string, options Options) (*DB, error) {
 	}
 	if err := recoverActorRotation(path); err != nil {
 		return fail(fmt.Errorf("%w: actor rotation: %v", ErrCorruption, err))
+	}
+	if err := recoverPairingIntent(path); err != nil {
+		return fail(fmt.Errorf("%w: pairing intent: %v", ErrCorruption, err))
 	}
 	m, err = readManifest(path)
 	if err != nil {

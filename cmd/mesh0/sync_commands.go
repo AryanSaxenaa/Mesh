@@ -25,7 +25,7 @@ func parsePeerActor(encoded string) (mesh0.ActorID, error) {
 }
 func peerCommand(args []string, out io.Writer) error {
 	if len(args) < 2 {
-		return fmt.Errorf("%w: peer identity|add|grant|revoke|list", mesh0.ErrInvalidArgument)
+		return fmt.Errorf("%w: peer identity|add|remove|grant|revoke|list", mesh0.ErrInvalidArgument)
 	}
 	db, err := open(args[1])
 	if err != nil {
@@ -60,6 +60,19 @@ func peerCommand(args []string, out io.Writer) error {
 		}
 		_, err = fmt.Fprintln(out, "peer trusted and actor authorized")
 		return err
+	case "remove":
+		if len(args) != 3 {
+			return fmt.Errorf("%w: peer remove PATH PUBLIC_KEY", mesh0.ErrInvalidArgument)
+		}
+		key, err := parsePeerKey(args[2])
+		if err != nil {
+			return err
+		}
+		if err := db.UntrustPeer(key); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(out, "peer trust removed")
+		return err
 	case "grant", "revoke":
 		if len(args) != 4 {
 			return fmt.Errorf("%w: peer %s PATH ACTOR_ID COLLECTION", mesh0.ErrInvalidArgument, args[0])
@@ -68,15 +81,17 @@ func peerCommand(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
+		verb := "granted"
 		if args[0] == "grant" {
 			err = db.GrantPeerCollectionWrite(actor, args[3])
 		} else {
 			err = db.RevokePeerCollectionWrite(actor, args[3])
+			verb = "revoked"
 		}
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(out, "peer collection write %sed\n", args[0])
+		_, err = fmt.Fprintf(out, "peer collection write %s\n", verb)
 		return err
 	case "list":
 		if len(args) != 2 {

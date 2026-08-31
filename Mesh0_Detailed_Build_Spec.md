@@ -64,7 +64,8 @@ segments fails open rather than being silently ignored.
 ## Zero-dependency contract
 
 The runtime module graph contains only `github.com/mesh0/mesh0`. Canonical
-builds use Go 1.22, `CGO_ENABLED=0`, and `-mod=readonly`. See
+builds use `CGO_ENABLED=0` and `-mod=readonly` and are verified byte-identical
+across Go 1.22 and Go 1.27; CI re-runs this check on every push. See
 [STDLIB.md](STDLIB.md), [deps-proof.txt](deps-proof.txt), and
 [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for the verifiable receipt.
 

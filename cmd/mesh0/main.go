@@ -95,7 +95,7 @@ Usage:
   mesh0 backup PATH ARCHIVE.zip [--blobs]
   mesh0 restore ARCHIVE.zip DESTINATION
   mesh0 export PATH [COLLECTION] [--projected]
-  mesh0 peer identity PATH | peer add PATH NAME ACTOR_ID PUBLIC_KEY | peer grant PATH ACTOR_ID COLLECTION | peer revoke PATH ACTOR_ID COLLECTION | peer list PATH
+  mesh0 peer identity PATH | peer add PATH NAME ACTOR_ID PUBLIC_KEY | peer remove PATH PUBLIC_KEY | peer grant PATH ACTOR_ID COLLECTION | peer revoke PATH ACTOR_ID COLLECTION | peer list PATH
   mesh0 serve PATH --listen ADDRESS
   mesh0 sync PATH ADDRESS PUBLIC_KEY [NAME]
   mesh0 doctor PATH

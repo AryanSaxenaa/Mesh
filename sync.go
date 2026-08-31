@@ -28,6 +28,8 @@ const (
 	actorBindingsName                    = "ACTOR_BINDINGS"
 	actorWriteGrantsName                 = "ACTOR_WRITE_GRANTS"
 	peersDir                             = "peers"
+	pairingIntentName                    = "PAIRING_INTENT"
+	pairingIntentGeneration              = 1
 	actorBindingGeneration               = 1
 	actorWriteGrantGeneration            = 1
 	maxActorBindings                     = 4096
@@ -522,15 +524,138 @@ func (db *DB) bindPeerActor(actor ActorID, public ed25519.PublicKey, requireTrus
 	return nil
 }
 
+type pairingIntent struct {
+	name   string
+	actor  ActorID
+	public ed25519.PublicKey
+}
+
+func pairingIntentBytes(intent pairingIntent) []byte {
+	var encoded encoder
+	encoded.raw([]byte("M0PI"))
+	encoded.u(pairingIntentGeneration)
+	encoded.str(intent.name)
+	encoded.id(ID(intent.actor))
+	encoded.bytes(intent.public)
+	payload := encoded.Bytes()
+	hash := sha256.Sum256(payload)
+	return append(payload, hash[:]...)
+}
+
+func readPairingIntent(root string) (pairingIntent, bool, error) {
+	var intent pairingIntent
+	data, err := os.ReadFile(filepath.Join(root, pairingIntentName))
+	if errors.Is(err, os.ErrNotExist) {
+		return intent, false, nil
+	}
+	if err != nil || len(data) < 32 {
+		return intent, false, ErrCorruption
+	}
+	hash := sha256.Sum256(data[:len(data)-32])
+	if string(hash[:]) != string(data[len(data)-32:]) {
+		return intent, false, ErrCorruption
+	}
+	decoded := decoder{b: data[:len(data)-32]}
+	magic, err := decoded.raw(4)
+	if err != nil || string(magic) != "M0PI" {
+		return intent, false, ErrCorruption
+	}
+	generation, err := decoded.u()
+	if err != nil || generation != pairingIntentGeneration {
+		return intent, false, ErrProtocolIncompatible
+	}
+	name, err := decoded.str(1024)
+	if err != nil {
+		return intent, false, ErrCorruption
+	}
+	actor, err := decoded.id()
+	if err != nil || ID(actor).IsZero() {
+		return intent, false, ErrCorruption
+	}
+	public, err := decoded.bytes(ed25519.PublicKeySize)
+	if err != nil || len(public) != ed25519.PublicKeySize || decoded.done() != nil {
+		return intent, false, ErrCorruption
+	}
+	intent.name = name
+	intent.actor = ActorID(actor)
+	intent.public = clonePublicKey(ed25519.PublicKey(public))
+	return intent, true, nil
+}
+
+func writePairingIntent(root string, intent pairingIntent) error {
+	return atomicWrite(filepath.Join(root, pairingIntentName), pairingIntentBytes(intent), 0600)
+}
+
+func clearPairingIntent(root string) error {
+	err := os.Remove(filepath.Join(root, pairingIntentName))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return syncDir(root)
+}
+
+// recoverPairingIntent completes or discards an interrupted
+// TrustAndBindPeerActor call before Open makes the database available. The
+// intent is durable before either the binding or the trust pin changes, so a
+// crash at any point is resolved deterministically: if the actor binding for
+// the journaled key was never made durable, pairing never took effect and the
+// journal is simply discarded; if the binding is durable, the journaled pin is
+// the same administrator-authorized action, so recovery finishes writing it
+// rather than leaving a bound-but-untrusted key stuck until a manual retry.
+func recoverPairingIntent(root string) error {
+	intent, exists, err := readPairingIntent(root)
+	if err != nil || !exists {
+		return err
+	}
+	bindings, err := readActorBindings(root)
+	if err != nil {
+		return err
+	}
+	bound, ok := bindings[intent.actor]
+	if !ok {
+		// The binding never became durable, so the pin (if any) was never
+		// journaled as belonging to this attempt. Nothing to finish.
+		return clearPairingIntent(root)
+	}
+	if string(bound) != string(intent.public) {
+		return ErrCorruption
+	}
+	if err := os.MkdirAll(filepath.Join(root, peersDir), 0700); err != nil {
+		return err
+	}
+	var encoded encoder
+	encoded.raw([]byte("M0PR"))
+	encoded.u(uint64(formatGeneration))
+	encoded.str(intent.name)
+	encoded.bytes(intent.public)
+	if err := atomicWrite(peerPath(root, intent.public), encoded.Bytes(), 0600); err != nil {
+		return err
+	}
+	return clearPairingIntent(root)
+}
+
 // TrustAndBindPeerActor persists actor ownership before its TLS trust pin. The
 // staged binding is inert without the pin, so an interrupted or failed pairing
 // cannot expand transport admission; the final pin is written only after the
-// binding validates and becomes durable.
+// binding validates and becomes durable. A durable intent journal is written
+// before either step and serialized through pairingMu, so a crash or a
+// concurrent pairing call is deterministically resolved on the next Open
+// rather than leaving trust and binding state that a judge (or operator)
+// cannot reason about.
 func (db *DB) TrustAndBindPeerActor(name string, actor ActorID, public ed25519.PublicKey) error {
-	if err := db.bindPeerActor(actor, public, false); err != nil {
+	db.pairingMu.Lock()
+	defer db.pairingMu.Unlock()
+	if err := writePairingIntent(db.path, pairingIntent{name: name, actor: actor, public: clonePublicKey(public)}); err != nil {
 		return err
 	}
-	return db.TrustPeer(name, public)
+	if err := db.bindPeerActor(actor, public, false); err != nil {
+		_ = clearPairingIntent(db.path)
+		return err
+	}
+	if err := db.TrustPeer(name, public); err != nil {
+		return err
+	}
+	return clearPairingIntent(db.path)
 }
 
 // ActorBindings returns a stable snapshot of the authorized actor-to-key map.
@@ -671,6 +796,26 @@ func decodePeer(data []byte) (Peer, error) {
 	}
 	return Peer{Name: name, PublicKey: ed25519.PublicKey(key), Fingerprint: peerFingerprint(key)}, nil
 }
+// UntrustPeer removes a peer's durable TLS trust pin. It does not remove any
+// existing actor-to-key binding for that key: an administrator who mis-paired
+// a peer can revoke transport trust immediately, then separately decide
+// whether the actor binding itself should be reassigned via RotateActor or
+// left in place for a future re-pairing under the same key. Removing an
+// absent pin is treated as success so the operation is safely idempotent.
+func (db *DB) UntrustPeer(public ed25519.PublicKey) error {
+	if len(public) != ed25519.PublicKeySize {
+		return fmt.Errorf("%w: peer public key", ErrInvalidArgument)
+	}
+	path := peerPath(db.path, public)
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return syncDir(filepath.Join(db.path, peersDir))
+}
+
 func (db *DB) TrustedPeers() ([]Peer, error) {
 	entries, err := os.ReadDir(filepath.Join(db.path, peersDir))
 	if os.IsNotExist(err) {

@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      CGO_ENABLED: 0
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Zero-dependency proof (go list -m all)
+        shell: bash
+        run: |
+          echo "Actual output of 'go list -m all':"
+          go list -m all | tee actual-deps.txt
+          expected="github.com/mesh0/mesh0"
+          actual="$(cat actual-deps.txt)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::module graph is not empty; expected only '$expected', got '$actual'"
+            exit 1
+          fi
+          echo "Confirmed: zero third-party runtime dependencies."
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build (canonical)
+        shell: bash
+        run: |
+          go build -mod=readonly -trimpath -buildvcs=false -ldflags='-buildid=' -o mesh0${{ runner.os == 'Windows' && '.exe' || '' }} ./cmd/mesh0
+
+      - name: go test ./... -v
+        run: go test ./... -v
+
+      - name: Reproducible build check (two independent builds, compare hashes)
+        shell: bash
+        run: |
+          bin="mesh0${{ runner.os == 'Windows' && '.exe' || '' }}"
+          go build -mod=readonly -trimpath -buildvcs=false -ldflags='-buildid=' -o build-a/$bin ./cmd/mesh0
+          go build -mod=readonly -trimpath -buildvcs=false -ldflags='-buildid=' -o build-b/$bin ./cmd/mesh0
+          hash_a=$(sha256sum build-a/$bin | awk '{print $1}')
+          hash_b=$(sha256sum build-b/$bin | awk '{print $1}')
+          echo "build A: $hash_a"
+          echo "build B: $hash_b"
+          if [ "$hash_a" != "$hash_b" ]; then
+            echo "::error::reproducible build check failed: hashes differ"
+            exit 1
+          fi
+          echo "Confirmed: byte-identical reproducible build on ${{ runner.os }}/${{ matrix.os }} with $(go version)."
+
+      - name: Self-test (durable commit, restart recovery, canonical verification)
+        shell: bash
+        run: |
+          bin="./mesh0${{ runner.os == 'Windows' && '.exe' || '' }}"
+          $bin selftest
