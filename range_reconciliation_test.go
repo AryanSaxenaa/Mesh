@@ -322,3 +322,34 @@ func TestRangeSelectionPaginatesByCanonicalBytes(t *testing.T) {
 		t.Fatalf("byte page payload = %d", total)
 	}
 }
+
+func TestDirectRangeDigestIsCanonicalAndWholeBatch(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.Update(context.Background(), func(tx *Tx) error {
+		if err := tx.Document("tasks", "one").Set("a", String("one")); err != nil {
+			return err
+		}
+		return tx.Document("tasks", "one").Set("b", String("two"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	actor := db.ActorID()
+	whole, err := db.DirectRangeDigest(actor, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial, err := db.DirectRangeDigest(actor, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole == partial {
+		t.Fatal("range identity was not bound into digest")
+	}
+	again, err := db.DirectRangeDigest(actor, 2, 2)
+	if err != nil || again != partial {
+		t.Fatalf("digest is not stable: %x, %v", again, err)
+	}
+	if _, err := db.DirectRangeDigest(actor, 0, 1); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("invalid digest range error = %v", err)
+	}
+}
