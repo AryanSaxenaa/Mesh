@@ -43,8 +43,9 @@ const (
 	maxSyncRounds                        = 4096
 	syncProtocolGeneration        uint64 = 2
 	syncCapabilityRangePagination uint64 = 1 << 0
+	syncCapabilityRangeDigest     uint64 = 1 << 1
 	syncRequiredCapabilities             = syncCapabilityRangePagination
-	syncSupportedCapabilities            = syncCapabilityRangePagination
+	syncSupportedCapabilities            = syncCapabilityRangePagination | syncCapabilityRangeDigest
 	wireHello                     byte   = 1
 	wireClock                     byte   = 2
 	wireBatch                     byte   = 3
