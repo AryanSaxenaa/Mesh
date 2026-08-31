@@ -353,3 +353,22 @@ func TestDirectRangeDigestIsCanonicalAndWholeBatch(t *testing.T) {
 		t.Fatalf("invalid digest range error = %v", err)
 	}
 }
+
+func TestRangeDigestNodeCodecIsBounded(t *testing.T) {
+	actor, err := newID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := rangeDigestNode{actor: ActorID(actor), first: 1, last: 2, digest: [32]byte{1}}
+	decoded, err := decodeRangeDigestNode(encodeRangeDigestNode(node))
+	if err != nil || decoded != node {
+		t.Fatalf("digest node round trip = %#v, %v", decoded, err)
+	}
+	if _, err := decodeRangeDigestNode([]byte{1}); !errors.Is(err, ErrCorruption) {
+		t.Fatalf("truncated digest node error = %v", err)
+	}
+	node.last = maxSyncRangeSpan + 1
+	if _, err := decodeRangeDigestNode(encodeRangeDigestNode(node)); !errors.Is(err, ErrCorruption) {
+		t.Fatalf("oversized digest node error = %v", err)
+	}
+}

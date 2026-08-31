@@ -53,6 +53,7 @@ const (
 	wireDigest                    byte   = 5
 	wireError                     byte   = 6
 	wireRanges                    byte   = 7
+	wireRangeDigest               byte   = 8
 	wireErrorProtocolIncompatible uint64 = 1
 	wireErrorAuthorizationDenied  uint64 = 2
 	wireErrorCausalGap            uint64 = 3

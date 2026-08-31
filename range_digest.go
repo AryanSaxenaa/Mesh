@@ -47,3 +47,42 @@ func (db *DB) DirectRangeDigest(actor ActorID, first, last uint64) ([32]byte, er
 	}
 	return sha256.Sum256(encoded.Bytes()), nil
 }
+
+// rangeDigestNode is a bounded direct-actor digest-tree leaf/interval.
+type rangeDigestNode struct {
+	actor       ActorID
+	first, last uint64
+	digest      [32]byte
+}
+
+func encodeRangeDigestNode(node rangeDigestNode) []byte {
+	var encoded encoder
+	encoded.id(ID(node.actor))
+	encoded.u(node.first)
+	encoded.u(node.last)
+	encoded.raw(node.digest[:])
+	return encoded.Bytes()
+}
+
+func decodeRangeDigestNode(data []byte) (rangeDigestNode, error) {
+	decoded := decoder{b: data}
+	actor, err := decoded.id()
+	if err != nil || ID(actor).IsZero() {
+		return rangeDigestNode{}, ErrCorruption
+	}
+	first, err := decoded.u()
+	if err != nil || first == 0 {
+		return rangeDigestNode{}, ErrCorruption
+	}
+	last, err := decoded.u()
+	if err != nil || last < first || last-first >= maxSyncRangeSpan {
+		return rangeDigestNode{}, ErrCorruption
+	}
+	raw, err := decoded.raw(32)
+	if err != nil || decoded.done() != nil {
+		return rangeDigestNode{}, ErrCorruption
+	}
+	var digest [32]byte
+	copy(digest[:], raw)
+	return rangeDigestNode{actor: ActorID(actor), first: first, last: last, digest: digest}, nil
+}
