@@ -5,7 +5,8 @@ Mesh0 is a standard-library-only, embedded, local-first document database for Go
 ## Quick start
 
 ```powershell
-CGO_ENABLED=0 go build -mod=readonly -trimpath -buildvcs=false -ldflags='-buildid=' -o mesh0.exe ./cmd/mesh0
+$env:CGO_ENABLED=0
+go build -mod=readonly -trimpath -buildvcs=false -ldflags='-buildid=' -o mesh0.exe ./cmd/mesh0
 ./mesh0.exe init ./data
 ./mesh0.exe put ./data tasks/42 title='"Ship renderer"' done=false
 ./mesh0.exe get ./data tasks/42
@@ -43,3 +44,10 @@ usable if the network or the serving peer disappears.
 Mesh0 currently supplies causal, conflict-preserving map registers, observed-remove sets, additive counters, anchored list/text sequences, atomic transaction batches, append-only WAL recovery, snapshots, content-addressed blobs, verified backup/restore, and direct TLS replication. It does **not** provide global serializability, global uniqueness, a global leader, or offline enforcement of arbitrary distributed business invariants. Applications requiring those properties need explicit coordination.
 
 See [CONSISTENCY.md](CONSISTENCY.md), [CRDT.md](CRDT.md), [STORAGE.md](STORAGE.md), [SYNC.md](SYNC.md), and [SECURITY.md](SECURITY.md).
+
+## Zero-dependency receipt
+
+Mesh0 enters Track D, Data & Storage. Its runtime module graph contains only
+this module, as recorded in [deps-proof.txt](deps-proof.txt). The implementation
+ledger is [STDLIB.md](STDLIB.md), and the byte-identical build receipt is
+[REPRODUCIBILITY.md](REPRODUCIBILITY.md).
