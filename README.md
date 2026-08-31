@@ -28,9 +28,7 @@ for only the collections it is allowed to modify.
 
 ## Watch the walkthrough
 
-[Watch the Mesh0 walkthrough on YouTube](https://www.youtube.com/watch?v=YOUR_VIDEO_ID)
-
-> Replace `YOUR_VIDEO_ID` with the published YouTube video ID.
+[Watch the Mesh0 walkthrough on YouTube](https://youtu.be/y6RkhYExvGU)
 
 ## Try peer-to-peer sync on one laptop
 
