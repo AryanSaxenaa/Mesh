@@ -31,3 +31,13 @@ func FuzzEqualityIndexValueKeysNeverPanic(f *testing.F) {
 		_ = validateEqualityIndex(EqualityIndex{Collection: string(raw), Path: string(raw)})
 	})
 }
+
+func FuzzDirectRangeDigestInputsNeverPanic(f *testing.F) {
+	f.Add(uint64(1), uint64(1))
+	f.Add(uint64(0), uint64(1))
+	f.Add(uint64(2), uint64(1))
+	f.Fuzz(func(t *testing.T, first, last uint64) {
+		db := newTestDB(t)
+		_, _ = db.DirectRangeDigest(db.ActorID(), first, last)
+	})
+}
