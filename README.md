@@ -21,6 +21,23 @@ storage engine, not a synchronization demo: it includes a durable write-ahead
 log, crash recovery, snapshots, backups, content-addressed blobs, queries,
 and authenticated direct replication.
 
+## Judge demo: two devices on one laptop
+
+No second laptop is required to demonstrate the full peer-sync path. This
+script creates two independent logical devices, makes an offline update on
+device B, pairs the devices with pinned keys and a collection grant, then
+proves that device A receives B's update over localhost TLS.
+
+```powershell
+go build -o mesh0.exe ./cmd/mesh0
+.\scripts\demo-peer-sync.ps1
+```
+
+The final line is `MESH0 PEER-SYNC DEMO PASSED`. The created replica folders
+are intentionally retained so judges can inspect their state afterwards. See
+[DEMO.md](DEMO.md) for the story, expected output, and the physical-device
+setup.
+
 ## Why it matters
 
 Most applications depend on an always-reachable database server to decide what
@@ -69,23 +86,43 @@ expected, documented behavior, not a bug in the demo.
 
 ## Two devices, no central server
 
-Each database has a persistent actor ID and transport key. Pair both replicas
-out of band, permit the other replica to write only the collection it needs,
-then sync directly:
+Sync is direct, authenticated, and opt-in: Mesh0 does not discover devices or
+send data to a cloud service. Replicas must share the same **database ID**, so
+do not run `init` independently on both devices. Create the second replica
+from the first one instead. The `replica create` command makes a portable copy
+with a new actor ID and transport key:
 
 ```powershell
-# On each device, inspect its database ID, actor ID, and public key.
+# This can be done on one machine for a demo, or the resulting laptop-b folder
+# can be copied once to the second device by a trusted transfer method.
+./mesh0.exe init ./laptop-a
+./mesh0.exe put ./laptop-a tasks/42 title='"Initial task"' done=false
+./mesh0.exe replica create ./laptop-a ./laptop-b
+
+# On each device, record its actor ID and public key out of band.
 ./mesh0.exe status ./laptop-a
 ./mesh0.exe peer identity ./laptop-a
+./mesh0.exe status ./laptop-b
+./mesh0.exe peer identity ./laptop-b
 
-# On laptop-b, trust laptop-a's key and permit it to write tasks.
+# Pair in both directions. Replace each placeholder with the value recorded
+# from the other device. Grant only collections that peer may write.
+./mesh0.exe peer add ./laptop-a laptop-b <laptop-b-actor-id> <laptop-b-public-key-hex>
+./mesh0.exe peer grant ./laptop-a <laptop-b-actor-id> tasks
 ./mesh0.exe peer add ./laptop-b laptop-a <laptop-a-actor-id> <laptop-a-public-key-hex>
 ./mesh0.exe peer grant ./laptop-b <laptop-a-actor-id> tasks
 
-# Make laptop-b reachable, then pull changes from laptop-a.
+# Make laptop-b reachable on the LAN/VPN, then sync from laptop-a. The public
+# key pins the TLS connection to laptop-b; no certificate authority is needed.
 ./mesh0.exe serve ./laptop-b --listen 0.0.0.0:7340
 ./mesh0.exe sync ./laptop-a 192.0.2.44:7340 <laptop-b-public-key-hex> laptop-b
 ```
+
+For two physical devices, an alternative is `backup` on laptop-a, copy the
+archive to laptop-b by a trusted method, then run `restore` and
+`replica rotate ./laptop-b` on laptop-b before pairing. Once paired, either
+device can initiate `sync` whenever the other is reachable; a sync exchanges
+both directions' permitted changes in one connection.
 
 If both devices change `tasks/42.title` while disconnected, Mesh0 retains both
 values. Use `./mesh0.exe conflicts ./data` to inspect them and

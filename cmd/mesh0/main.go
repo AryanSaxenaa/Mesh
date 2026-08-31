@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -49,6 +50,8 @@ func run(ctx context.Context, args []string, out, errOut io.Writer) int {
 		err = backupCommand(ctx, args[1:], out)
 	case "restore":
 		err = restoreCommand(args[1:], out)
+	case "replica":
+		err = replicaCommand(ctx, args[1:], out)
 	case "export":
 		err = exportCommand(ctx, args[1:], out)
 	case "doctor":
@@ -94,6 +97,8 @@ Usage:
   mesh0 snapshot PATH | compact PATH
   mesh0 backup PATH ARCHIVE.zip [--blobs]
   mesh0 restore ARCHIVE.zip DESTINATION
+  mesh0 replica create SOURCE DESTINATION [--blobs]
+  mesh0 replica rotate PATH
   mesh0 export PATH [COLLECTION] [--projected]
   mesh0 peer identity PATH | peer add PATH NAME ACTOR_ID PUBLIC_KEY | peer remove PATH PUBLIC_KEY | peer grant PATH ACTOR_ID COLLECTION | peer revoke PATH ACTOR_ID COLLECTION | peer list PATH
   mesh0 serve PATH --listen ADDRESS
@@ -407,8 +412,17 @@ func statusCommand(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(out, "DATABASE STATUS\n\nreplica\n  database    %s\n  actor       %s\n  durable     %t\n  documents   %d\n\nhistory\n  operations  %d\n  actors      %d\n  frontier    %v\n\nstorage\n  active segment  %d\n  snapshot        %s\n  digest          %s\n", mesh0.ID(status.DatabaseID).String(), mesh0.ID(status.ActorID).String(), status.Durability == mesh0.DurabilitySync, status.Documents, status.Operations, status.KnownActors, status.Frontier, status.ActiveSegment, status.Snapshot, hex.EncodeToString(status.LogicalDigest[:]))
+	_, err = fmt.Fprintf(out, "DATABASE STATUS\n\nreplica\n  database    %s\n  actor       %s\n  durable     %t\n  documents   %d\n\nhistory\n  operations  %d\n  actors      %d\n  frontier    %s\n\nstorage\n  active segment  %d\n  snapshot        %s\n  digest          %s\n", mesh0.ID(status.DatabaseID).String(), mesh0.ID(status.ActorID).String(), status.Durability == mesh0.DurabilitySync, status.Documents, status.Operations, status.KnownActors, frontierString(status.Frontier), status.ActiveSegment, status.Snapshot, hex.EncodeToString(status.LogicalDigest[:]))
 	return err
+}
+
+func frontierString(frontier mesh0.VersionVector) string {
+	entries := make([]string, 0, len(frontier))
+	for actor, sequence := range frontier {
+		entries = append(entries, fmt.Sprintf("%s:%d", mesh0.ID(actor).String(), sequence))
+	}
+	sort.Strings(entries)
+	return "{" + strings.Join(entries, ", ") + "}"
 }
 func verifyCommand(ctx context.Context, args []string, out io.Writer) error {
 	blobs := false

@@ -7,3 +7,33 @@ The binary protocol uses a versioned `Hello` with canonical capability negotiati
 This is direct-peer reconciliation only. Mesh0 does not yet relay another actor's batches, perform Merkle range-digest reconciliation, or install mergeable state snapshots; those features require persisted origin provenance and safe state-transfer semantics.
 
 There is no authoritative relay or primary. `serve` is merely a reachable replica; all replicas remain independently readable and writable while offline.
+
+## Replica provisioning and operator flow
+
+Synchronization is only defined between replicas of the same database ID. Two
+separately initialized directories are unrelated databases and the Hello
+exchange rejects them before history transfer. The CLI therefore provides:
+
+```text
+mesh0 replica create SOURCE DESTINATION [--blobs]
+mesh0 replica rotate PATH
+```
+
+`replica create` makes a stable backup of `SOURCE`, restores it into a staging
+directory, rotates the destination's local actor and Ed25519 transport key,
+and atomically publishes the new directory only after all steps succeed. The
+result preserves database identity and causal history while making the new
+replica independently writable. It requires a destination that does not yet
+exist, so it cannot overwrite an operator's database.
+
+For a replica created by a manually transferred backup, run `replica rotate`
+after `restore` and before pairing. Actor rotation keeps old signed history
+valid, creates a fresh local actor/key, and requires explicit re-pairing.
+
+Operators exchange each replica's actor ID and public key out of band, use
+`peer add` to pin and bind each remote identity, and use `peer grant` to allow
+specific remote actors to write specific collections. A peer is reachable only
+while `serve PATH --listen ADDRESS` is running. Either peer can initiate
+`sync`; a successful connection reconciles permitted changes in both
+directions. Mesh0 intentionally provides no discovery, relay, NAT traversal,
+or automatic background scheduling.
